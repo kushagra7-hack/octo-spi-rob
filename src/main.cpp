@@ -81,12 +81,10 @@ void disableAll() {
 void setMotor(uint8_t id, int val) {
   if (id >= TOTAL_MOTORS) return;
   if (val < 0) { disableMotor(id); captureFrame(); return; }
-  // UpDown (CH3,CH4) are position servos: 500-2500µs = 0-180°
-  // Cable/Bend/Base are continuous: 1000-2000µs
   uint32_t us;
   if (id == M_UPDOWN_1 || id == M_UPDOWN_2) {
     us = (uint32_t)constrain(val, 500, 2500);
-    if (id == M_UPDOWN_2) us = 3000 - us; // invert CH4
+    if (id == M_UPDOWN_2) us = 3000 - us;
   } else {
     us = (uint32_t)constrain(val, 1000, 2000);
   }
@@ -175,6 +173,25 @@ void openGripper() {
   autoGrabRunning = false;
 }
 
+// ── Combo motor handler ───────────────────────────────────
+void handleCombo() {
+  if (!server.hasArg("ids") || !server.hasArg("angle")) {
+    server.send(400,"application/json","{\"error\":\"Missing args\"}"); return;
+  }
+  int angle = server.arg("angle").toInt();
+  String ids = server.arg("ids"); // e.g. "0,1"
+  int i = 0;
+  while (i < ids.length()) {
+    int comma = ids.indexOf(',', i);
+    String tok = (comma == -1) ? ids.substring(i) : ids.substring(i, comma);
+    int id = tok.toInt();
+    setMotor((uint8_t)id, angle);
+    if (comma == -1) break;
+    i = comma + 1;
+  }
+  server.send(200,"application/json","{\"ok\":1}");
+}
+
 String buildJSON() {
   updateCurrents();
   String j = "{";
@@ -234,7 +251,7 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .modeBtn.soft{border-color:#00ffc8;color:#00ffc8}.modeBtn.soft.active{background:#00ffc818}
 .modeBtn.medium{border-color:#ffcc00;color:#ffcc00}.modeBtn.medium.active{background:#ffcc0018}
 .modeBtn.hard{border-color:#ff5e3a;color:#ff5e3a}.modeBtn.hard.active{background:#ff5e3a18}
-.grab-btns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.grab-btns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
 .gbtn{flex:1;min-width:100px;padding:12px;border-radius:10px;border:none;
   font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1rem;
   cursor:pointer;transition:all .2s;letter-spacing:.08em}
@@ -243,6 +260,21 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .btn-open{background:transparent;border:2px solid var(--ca);color:var(--ca)}
 .btn-kill{background:transparent;border:2px solid var(--red);color:var(--red)}
 .btn-home{background:transparent;border:2px solid var(--dim);color:var(--dim)}
+/* COMBO BUTTONS */
+.combo-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.combo-btn{flex:1;min-width:90px;padding:13px 8px;border-radius:10px;
+  font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.9rem;
+  cursor:pointer;transition:all .15s;text-align:center;line-height:1.5;
+  -webkit-tap-highlight-color:transparent;touch-action:none}
+.combo-btn:active{filter:brightness(1.3);transform:scale(0.97)}
+.combo-ab{border:2px solid #00ffc8;background:transparent;color:#00ffc8}
+.combo-ab.held{background:#00ffc825;box-shadow:0 0 12px #00ffc840}
+.combo-bc{border:2px solid #ffcc00;background:transparent;color:#ffcc00}
+.combo-bc.held{background:#ffcc0025;box-shadow:0 0 12px #ffcc0040}
+.combo-ac{border:2px solid #a78bfa;background:transparent;color:#a78bfa}
+.combo-ac.held{background:#a78bfa25;box-shadow:0 0 12px #a78bfa40}
+.combo-lbl{font-size:.6rem;color:inherit;opacity:.7;display:block;margin-top:2px;
+  font-family:'Share Tech Mono',monospace}
 /* CURRENT */
 .curr-row{display:flex;gap:8px;flex-wrap:wrap}
 .curr-box{flex:1;min-width:70px;background:#0a1020;border:1px solid var(--border);
@@ -277,7 +309,6 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
   font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--dim);margin-bottom:3px}
 .sl-val{text-align:center;font-family:'Share Tech Mono',monospace;font-size:1.3rem;
   font-weight:700;color:var(--mc);margin-bottom:6px}
-/* range track */
 input[type=range]{width:100%;-webkit-appearance:none;height:6px;
   background:linear-gradient(to right,#ff3355 0%,#1c2a45 45%,#1c2a45 55%,var(--mc) 100%);
   border-radius:3px;outline:none;cursor:pointer}
@@ -286,7 +317,6 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;heigh
 input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
 .sl-legend{display:flex;justify-content:space-between;
   font-family:'Share Tech Mono',monospace;font-size:.58rem;margin-top:3px}
-/* KILL button under slider */
 .kill-row{display:flex;gap:6px;margin-top:8px}
 .kill-btn{flex:1;padding:9px;border-radius:8px;border:1px solid var(--red);
   background:transparent;color:var(--red);font-family:'Rajdhani',sans-serif;
@@ -294,15 +324,12 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
 .kill-btn:hover{background:#ff335522}
 .curt{font-size:.68rem;font-family:'Share Tech Mono',monospace;color:#3dffa0;
   text-align:right;margin-bottom:4px;height:1.1em}
-/* DUAL card */
 .dual-badge{font-size:.58rem;background:#1a2540;padding:2px 6px;border-radius:4px;
   border:1px solid #7b6cff;color:#7b6cff;margin-left:4px}
-/* MOTION CAPTURE */
 .rec-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
 .rec-dot.recording{background:var(--red);animation:blink .5s infinite}
 .rec-dot.replaying{background:var(--ca);animation:blink .5s infinite}
 .rec-dot.idle{background:var(--dim)}
-/* STATUS */
 .sbar{background:#06080f;border:1px solid var(--border);border-radius:8px;
   padding:9px 14px;max-width:980px;margin:12px auto;position:relative;z-index:1;
   font-family:'Share Tech Mono',monospace;font-size:.68rem;color:var(--dim);
@@ -336,6 +363,34 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
     <button class="gbtn btn-kill" onclick="powerOff()">⚡ ALL OFF</button>
     <button class="gbtn btn-home" onclick="homeAll()">⌂ HOME</button>
   </div>
+
+  <!-- COMBO HOLD BUTTONS -->
+  <div style="font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--dim);
+    margin-bottom:6px;letter-spacing:.1em">// COMBO HOLD — HOLD TO RUN TWO CABLES AT ONCE</div>
+  <div class="combo-row">
+    <button class="combo-btn combo-ab" id="cmbAB"
+      onmousedown="comboStart([0,1],'cmbAB')"   ontouchstart="comboStart([0,1],'cmbAB')"
+      onmouseup="comboStop([0,1],'cmbAB')"       ontouchend="comboStop([0,1],'cmbAB')"
+      onmouseleave="comboStop([0,1],'cmbAB')">
+      🔀 CH0 + CH1
+      <span class="combo-lbl">CABLE-A &amp; CABLE-B · Hold</span>
+    </button>
+    <button class="combo-btn combo-bc" id="cmbBC"
+      onmousedown="comboStart([1,2],'cmbBC')"   ontouchstart="comboStart([1,2],'cmbBC')"
+      onmouseup="comboStop([1,2],'cmbBC')"       ontouchend="comboStop([1,2],'cmbBC')"
+      onmouseleave="comboStop([1,2],'cmbBC')">
+      🔀 CH1 + CH2
+      <span class="combo-lbl">CABLE-B &amp; CABLE-C · Hold</span>
+    </button>
+    <button class="combo-btn combo-ac" id="cmbAC"
+      onmousedown="comboStart([0,2],'cmbAC')"   ontouchstart="comboStart([0,2],'cmbAC')"
+      onmouseup="comboStop([0,2],'cmbAC')"       ontouchend="comboStop([0,2],'cmbAC')"
+      onmouseleave="comboStop([0,2],'cmbAC')">
+      🔀 CH0 + CH2
+      <span class="combo-lbl">CABLE-A &amp; CABLE-C · Hold</span>
+    </button>
+  </div>
+
   <div class="curr-row">
     <div class="curr-box"><div class="curr-label">CABLE-A·CH0</div>
       <div class="curr-val" id="cc0">0.000A</div>
@@ -483,7 +538,6 @@ function buildSliderCard(id, cid, opts={}) {
   </div>`;
 }
 
-// Build dual UpDown card with one slider controlling both CH3+CH4
 function buildUDCard(cid) {
   document.getElementById(cid).innerHTML += `
   <div class="card" style="--mc:#7b6cff">
@@ -524,7 +578,6 @@ function buildUDCard(cid) {
   </div>`;
 }
 
-// Build all cards
 [0,1,2].forEach(id => buildSliderCard(id, 'tentGrid'));
 buildUDCard('udGrid');
 [5,6].forEach(id => buildSliderCard(id, 'armContGrid'));
@@ -541,8 +594,12 @@ async function post(ep,body){
     headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
 }
 
-function usToLabel(us) {
+function usToLabel(us, isPosition=false) {
   us = parseInt(us);
+  if (isPosition) {
+    const deg = Math.round((us - 500) / (2500-500) * 180);
+    return deg + '°';
+  }
   if (us === 1500) return 'STOP';
   if (us < 1500)  return `◀ REV ${us}µs`;
   return `FWD ${us}µs ▶`;
@@ -559,17 +616,6 @@ function liveMotor(id, val) {
   }, 25);
 }
 
-function usToLabel(us, isPosition=false) {
-  us = parseInt(us);
-  if (isPosition) {
-    const deg = Math.round((us - 500) / (2500-500) * 180);
-    return deg + '°';
-  }
-  if (us === 1500) return 'STOP';
-  if (us < 1500)  return `◀ REV ${us}µs`;
-  return `FWD ${us}µs ▶`;
-}
-
 function liveUD(val) {
   val = parseInt(val);
   const deg = Math.round((val - 500) / 2000 * 180);
@@ -581,7 +627,6 @@ function liveUD(val) {
   }, 25);
 }
 
-// Kill = set to -1 (zero power) and snap slider to center
 function killMotor(id) {
   const sl = document.getElementById('sl'+id);
   if (sl) sl.value = 1500;
@@ -609,7 +654,46 @@ function snapUD() {
   post('/api/updown', 'angle=1500');
 }
 
-// ── Kill all on page unload / tab close ──────────────────
+// ── COMBO HOLD BUTTONS ────────────────────────────────────
+function comboStart(ids, btnId) {
+  // Highlight button
+  const btn = document.getElementById(btnId);
+  if (btn) btn.classList.add('held');
+  // Run all channels at full forward
+  ids.forEach(id => {
+    const sl = document.getElementById('sl' + id);
+    if (sl) sl.value = 2000;
+    const av = document.getElementById('av' + id);
+    if (av) av.textContent = 'FWD 2000µs ▶';
+  });
+  // Send to ESP32 — send each motor individually for reliability
+  ids.forEach(id => {
+    post('/api/motor', `id=${id}&angle=2000`).catch(()=>{});
+  });
+  lg('▶ COMBO CH' + ids.join('+CH') + ' — HOLD', 'warn');
+}
+
+function comboStop(ids, btnId) {
+  const btn = document.getElementById(btnId);
+  if (btn) btn.classList.remove('held');
+  ids.forEach(id => {
+    const sl = document.getElementById('sl' + id);
+    if (sl) sl.value = 1500;
+    const av = document.getElementById('av' + id);
+    if (av) av.textContent = 'STOP';
+    post('/api/motor', `id=${id}&angle=-1`).catch(()=>{});
+  });
+  lg('⏹ COMBO CH' + ids.join('+CH') + ' — OFF', 'ok');
+}
+
+// Safety: stop all combos if touch is cancelled
+document.addEventListener('touchcancel', () => {
+  comboStop([0,1],'cmbAB');
+  comboStop([1,2],'cmbBC');
+  comboStop([0,2],'cmbAC');
+});
+
+// Kill all on tab close
 window.addEventListener('beforeunload', () => {
   navigator.sendBeacon('/api/poweroff', '');
 });
@@ -652,7 +736,6 @@ async function openGripper(){
 async function homeAll(){
   try{
     await post('/api/home','');
-    // snap all sliders to center
     [0,1,2,5,6].forEach(id=>{
       const sl=document.getElementById('sl'+id);
       if(sl){sl.value=1500;document.getElementById('av'+id).textContent='STOP';}
@@ -681,7 +764,7 @@ async function recStop() {try{await post('/api/rec/stop',''); lg('⏹ Stopped','
 async function recPlay() {try{await post('/api/rec/play',''); lg('▶ Loop replay','ok');}catch(e){}}
 async function recStopPlay(){try{await post('/api/rec/stopplay','');lg('⏸ Paused','warn');}catch(e){}}
 
-// ── Poll — only updates currents, never sliders ───────────
+// ── Poll ──────────────────────────────────────────────────
 async function poll(){
   try{
     const d=await(await fetch('/api/status')).json();
@@ -703,7 +786,6 @@ async function poll(){
 }
 setInterval(poll,1500); poll();
 
-// ── Rec status poll ───────────────────────────────────────
 setInterval(async()=>{
   try{
     const d=await(await fetch('/api/rec/status')).json();
@@ -728,7 +810,7 @@ setInterval(async()=>{
   }catch(e){}
 },600);
 
-lg('OctoGrip v7 ready 🐙','ok');
+lg('OctoGrip v8 ready 🐙','ok');
 </script>
 </body>
 </html>)HTML");
@@ -792,7 +874,7 @@ void setup() {
   unsigned long _t=millis();
   while(!Serial&&millis()-_t<3000);
   delay(200);
-  Serial.println("\n>>> OCTOGRIP v7 <<<");
+  Serial.println("\n>>> OCTOGRIP v8 <<<");
 
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
