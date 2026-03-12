@@ -173,25 +173,6 @@ void openGripper() {
   autoGrabRunning = false;
 }
 
-// ── Combo motor handler ───────────────────────────────────
-void handleCombo() {
-  if (!server.hasArg("ids") || !server.hasArg("angle")) {
-    server.send(400,"application/json","{\"error\":\"Missing args\"}"); return;
-  }
-  int angle = server.arg("angle").toInt();
-  String ids = server.arg("ids"); // e.g. "0,1"
-  int i = 0;
-  while (i < ids.length()) {
-    int comma = ids.indexOf(',', i);
-    String tok = (comma == -1) ? ids.substring(i) : ids.substring(i, comma);
-    int id = tok.toInt();
-    setMotor((uint8_t)id, angle);
-    if (comma == -1) break;
-    i = comma + 1;
-  }
-  server.send(200,"application/json","{\"ok\":1}");
-}
-
 String buildJSON() {
   updateCurrents();
   String j = "{";
@@ -242,7 +223,6 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
   padding:18px;max-width:980px;margin:0 auto 14px;position:relative;z-index:1}
 .ph{font-size:.75rem;letter-spacing:.12em;color:var(--dim);
   font-family:'Share Tech Mono',monospace;margin-bottom:12px}
-/* GRAB */
 .mode-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .modeBtn{flex:1;min-width:80px;padding:10px 6px;border-radius:8px;
   border:2px solid var(--border);background:transparent;color:var(--text);
@@ -251,7 +231,7 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .modeBtn.soft{border-color:#00ffc8;color:#00ffc8}.modeBtn.soft.active{background:#00ffc818}
 .modeBtn.medium{border-color:#ffcc00;color:#ffcc00}.modeBtn.medium.active{background:#ffcc0018}
 .modeBtn.hard{border-color:#ff5e3a;color:#ff5e3a}.modeBtn.hard.active{background:#ff5e3a18}
-.grab-btns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.grab-btns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 .gbtn{flex:1;min-width:100px;padding:12px;border-radius:10px;border:none;
   font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1rem;
   cursor:pointer;transition:all .2s;letter-spacing:.08em}
@@ -260,22 +240,22 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .btn-open{background:transparent;border:2px solid var(--ca);color:var(--ca)}
 .btn-kill{background:transparent;border:2px solid var(--red);color:var(--red)}
 .btn-home{background:transparent;border:2px solid var(--dim);color:var(--dim)}
-/* COMBO BUTTONS */
-.combo-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.combo-btn{flex:1;min-width:90px;padding:13px 8px;border-radius:10px;
-  font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.9rem;
-  cursor:pointer;transition:all .15s;text-align:center;line-height:1.5;
-  -webkit-tap-highlight-color:transparent;touch-action:none}
-.combo-btn:active{filter:brightness(1.3);transform:scale(0.97)}
-.combo-ab{border:2px solid #00ffc8;background:transparent;color:#00ffc8}
-.combo-ab.held{background:#00ffc825;box-shadow:0 0 12px #00ffc840}
-.combo-bc{border:2px solid #ffcc00;background:transparent;color:#ffcc00}
-.combo-bc.held{background:#ffcc0025;box-shadow:0 0 12px #ffcc0040}
-.combo-ac{border:2px solid #a78bfa;background:transparent;color:#a78bfa}
-.combo-ac.held{background:#a78bfa25;box-shadow:0 0 12px #a78bfa40}
-.combo-lbl{font-size:.6rem;color:inherit;opacity:.7;display:block;margin-top:2px;
-  font-family:'Share Tech Mono',monospace}
-/* CURRENT */
+.combo-section{margin-top:14px;background:#0a1020;border:1px solid var(--border);
+  border-radius:10px;padding:12px 14px}
+.combo-label{font-family:'Share Tech Mono',monospace;font-size:.7rem;
+  color:var(--dim);letter-spacing:.1em;margin-bottom:10px}
+.combo-row{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.combo-tag{font-family:'Share Tech Mono',monospace;font-size:.65rem;
+  color:var(--dim);min-width:60px}
+.cbtn{flex:1;padding:11px 6px;border-radius:9px;border:2px solid;
+  background:transparent;font-family:'Rajdhani',sans-serif;font-weight:700;
+  font-size:.88rem;cursor:pointer;transition:all .15s;text-align:center;
+  line-height:1.3;-webkit-tap-highlight-color:transparent}
+.cbtn:active{filter:brightness(1.3);transform:scale(.97)}
+.cbtn.fwd{border-color:var(--fwdcol,#00ffc8);color:var(--fwdcol,#00ffc8)}
+.cbtn.fwd:active{background:rgba(0,255,200,.15)}
+.cbtn.rev{border-color:#ff3355;color:#ff3355}
+.cbtn.rev:active{background:rgba(255,51,85,.15)}
 .curr-row{display:flex;gap:8px;flex-wrap:wrap}
 .curr-box{flex:1;min-width:70px;background:#0a1020;border:1px solid var(--border);
   border-radius:8px;padding:10px;text-align:center}
@@ -283,14 +263,12 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .curr-val{font-size:1rem;font-weight:700;font-family:'Share Tech Mono',monospace;color:var(--ca)}
 .curr-bar{height:4px;background:var(--border);border-radius:2px;margin-top:6px;overflow:hidden}
 .curr-fill{height:100%;border-radius:2px;transition:width .4s}
-/* FORCE SLIDER */
 .force-wrap{margin-top:14px;background:#0a1020;border:1px solid var(--border);
   border-radius:10px;padding:12px 14px}
 .force-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .force-label{font-family:'Share Tech Mono',monospace;font-size:.7rem;color:var(--dim);min-width:80px}
 .force-val{font-family:'Share Tech Mono',monospace;font-size:1rem;font-weight:700;
   color:#7b6cff;min-width:55px;text-align:right}
-/* MOTOR SLIDER CARD */
 .sec-lbl{font-family:'Share Tech Mono',monospace;font-size:.7rem;color:var(--dim);
   letter-spacing:.1em;max-width:980px;margin:14px auto 8px;position:relative;z-index:1}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));
@@ -303,7 +281,6 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .csub{font-size:.62rem;color:var(--dim);margin-top:2px}
 .cch{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:var(--dim);
   background:#0a1020;padding:2px 6px;border-radius:4px;border:1px solid var(--border)}
-/* LIVE SLIDER */
 .sl-wrap{margin:8px 0 6px}
 .sl-labels{display:flex;justify-content:space-between;
   font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--dim);margin-bottom:3px}
@@ -365,33 +342,63 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
   </div>
 
   <!-- COMBO HOLD BUTTONS -->
-  <div style="font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--dim);
-    margin-bottom:6px;letter-spacing:.1em">// COMBO HOLD — HOLD TO RUN TWO CABLES AT ONCE</div>
-  <div class="combo-row">
-    <button class="combo-btn combo-ab" id="cmbAB"
-      onmousedown="comboStart([0,1],'cmbAB')"   ontouchstart="comboStart([0,1],'cmbAB')"
-      onmouseup="comboStop([0,1],'cmbAB')"       ontouchend="comboStop([0,1],'cmbAB')"
-      onmouseleave="comboStop([0,1],'cmbAB')">
-      🔀 CH0 + CH1
-      <span class="combo-lbl">CABLE-A &amp; CABLE-B · Hold</span>
-    </button>
-    <button class="combo-btn combo-bc" id="cmbBC"
-      onmousedown="comboStart([1,2],'cmbBC')"   ontouchstart="comboStart([1,2],'cmbBC')"
-      onmouseup="comboStop([1,2],'cmbBC')"       ontouchend="comboStop([1,2],'cmbBC')"
-      onmouseleave="comboStop([1,2],'cmbBC')">
-      🔀 CH1 + CH2
-      <span class="combo-lbl">CABLE-B &amp; CABLE-C · Hold</span>
-    </button>
-    <button class="combo-btn combo-ac" id="cmbAC"
-      onmousedown="comboStart([0,2],'cmbAC')"   ontouchstart="comboStart([0,2],'cmbAC')"
-      onmouseup="comboStop([0,2],'cmbAC')"       ontouchend="comboStop([0,2],'cmbAC')"
-      onmouseleave="comboStop([0,2],'cmbAC')">
-      🔀 CH0 + CH2
-      <span class="combo-lbl">CABLE-A &amp; CABLE-C · Hold</span>
-    </button>
+  <div class="combo-section">
+    <div class="combo-label">// COMBO HOLD BUTTONS — HOLD TO RUN · RELEASE TO STOP</div>
+
+    <!-- CH0 + CH1 -->
+    <div class="combo-row">
+      <span class="combo-tag">CH0+CH1</span>
+      <button class="cbtn fwd" style="--fwdcol:#00ffc8"
+        onmousedown="comboStart([0,1],2000)" ontouchstart="comboStart([0,1],2000)"
+        onmouseup="comboStop([0,1])"         ontouchend="comboStop([0,1])"
+        onmouseleave="comboStop([0,1])">
+        ▶ FWD<br><small style="font-size:.68rem">Hold</small>
+      </button>
+      <button class="cbtn rev"
+        onmousedown="comboStart([0,1],1000)" ontouchstart="comboStart([0,1],1000)"
+        onmouseup="comboStop([0,1])"         ontouchend="comboStop([0,1])"
+        onmouseleave="comboStop([0,1])">
+        ◀ REV<br><small style="font-size:.68rem">Hold</small>
+      </button>
+    </div>
+
+    <!-- CH1 + CH2 -->
+    <div class="combo-row">
+      <span class="combo-tag">CH1+CH2</span>
+      <button class="cbtn fwd" style="--fwdcol:#ffcc00"
+        onmousedown="comboStart([1,2],2000)" ontouchstart="comboStart([1,2],2000)"
+        onmouseup="comboStop([1,2])"         ontouchend="comboStop([1,2])"
+        onmouseleave="comboStop([1,2])">
+        ▶ FWD<br><small style="font-size:.68rem">Hold</small>
+      </button>
+      <button class="cbtn rev"
+        onmousedown="comboStart([1,2],1000)" ontouchstart="comboStart([1,2],1000)"
+        onmouseup="comboStop([1,2])"         ontouchend="comboStop([1,2])"
+        onmouseleave="comboStop([1,2])">
+        ◀ REV<br><small style="font-size:.68rem">Hold</small>
+      </button>
+    </div>
+
+    <!-- CH0 + CH2 -->
+    <div class="combo-row" style="margin-bottom:0">
+      <span class="combo-tag">CH0+CH2</span>
+      <button class="cbtn fwd" style="--fwdcol:#a78bfa"
+        onmousedown="comboStart([0,2],2000)" ontouchstart="comboStart([0,2],2000)"
+        onmouseup="comboStop([0,2])"         ontouchend="comboStop([0,2])"
+        onmouseleave="comboStop([0,2])">
+        ▶ FWD<br><small style="font-size:.68rem">Hold</small>
+      </button>
+      <button class="cbtn rev"
+        onmousedown="comboStart([0,2],1000)" ontouchstart="comboStart([0,2],1000)"
+        onmouseup="comboStop([0,2])"         ontouchend="comboStop([0,2])"
+        onmouseleave="comboStop([0,2])">
+        ◀ REV<br><small style="font-size:.68rem">Hold</small>
+      </button>
+    </div>
   </div>
 
-  <div class="curr-row">
+  <!-- CURRENT DISPLAY -->
+  <div class="curr-row" style="margin-top:14px">
     <div class="curr-box"><div class="curr-label">CABLE-A·CH0</div>
       <div class="curr-val" id="cc0">0.000A</div>
       <div class="curr-bar"><div class="curr-fill" id="cb0" style="background:#00ffc8;width:0%"></div></div></div>
@@ -491,7 +498,6 @@ const MOTORS=[
 const FORCES={soft:0.15,medium:0.38,hard:0.72};
 let currentMode='medium';
 
-// ── Build a live-slider card ──────────────────────────────
 function buildSliderCard(id, cid, opts={}) {
   const m = MOTORS.find(x=>x.id===id) || {name:'Motor'+id,sub:'',color:'#7b6cff'};
   const color = opts.color || m.color;
@@ -499,7 +505,6 @@ function buildSliderCard(id, cid, opts={}) {
   const sub   = opts.sub   || m.sub;
   const ch    = opts.ch    || 'CH'+id;
   const showCurrent = id < 3;
-
   document.getElementById(cid).innerHTML += `
   <div class="card" style="--mc:${color}">
     <div class="card-head">
@@ -582,7 +587,6 @@ function buildUDCard(cid) {
 buildUDCard('udGrid');
 [5,6].forEach(id => buildSliderCard(id, 'armContGrid'));
 
-// ── Helpers ───────────────────────────────────────────────
 function lg(msg,cls=''){
   const d=document.getElementById('log'),e=document.createElement('div');
   e.className='le '+cls;
@@ -605,7 +609,6 @@ function usToLabel(us, isPosition=false) {
   return `FWD ${us}µs ▶`;
 }
 
-// ── Live motor control (debounced 25ms) ───────────────────
 function liveMotor(id, val) {
   val = parseInt(val);
   document.getElementById('av'+id).textContent = usToLabel(val);
@@ -654,51 +657,34 @@ function snapUD() {
   post('/api/updown', 'angle=1500');
 }
 
-// ── COMBO HOLD BUTTONS ────────────────────────────────────
-function comboStart(ids, btnId) {
-  // Highlight button
-  const btn = document.getElementById(btnId);
-  if (btn) btn.classList.add('held');
-  // Run all channels at full forward
+// ── Combo hold buttons ────────────────────────────────────
+function comboStart(ids, speed) {
   ids.forEach(id => {
     const sl = document.getElementById('sl' + id);
-    if (sl) sl.value = 2000;
-    const av = document.getElementById('av' + id);
-    if (av) av.textContent = 'FWD 2000µs ▶';
+    if (sl) sl.value = speed;
+    if (document.getElementById('av' + id))
+      document.getElementById('av' + id).textContent =
+        speed === 2000 ? 'FWD 2000µs ▶' : '◀ REV 1000µs';
+    post('/api/motor', `id=${id}&angle=${speed}`);
   });
-  // Send to ESP32 — send each motor individually for reliability
-  ids.forEach(id => {
-    post('/api/motor', `id=${id}&angle=2000`).catch(()=>{});
-  });
-  lg('▶ COMBO CH' + ids.join('+CH') + ' — HOLD', 'warn');
+  lg((speed===2000?'▶ FWD':'◀ REV')+' Combo CH'+ids.join('+CH')+' ON','warn');
 }
 
-function comboStop(ids, btnId) {
-  const btn = document.getElementById(btnId);
-  if (btn) btn.classList.remove('held');
+function comboStop(ids) {
   ids.forEach(id => {
     const sl = document.getElementById('sl' + id);
     if (sl) sl.value = 1500;
-    const av = document.getElementById('av' + id);
-    if (av) av.textContent = 'STOP';
-    post('/api/motor', `id=${id}&angle=-1`).catch(()=>{});
+    if (document.getElementById('av' + id))
+      document.getElementById('av' + id).textContent = 'STOP';
+    post('/api/motor', `id=${id}&angle=-1`);
   });
-  lg('⏹ COMBO CH' + ids.join('+CH') + ' — OFF', 'ok');
+  lg('⏹ Combo CH'+ids.join('+CH')+' OFF','ok');
 }
 
-// Safety: stop all combos if touch is cancelled
-document.addEventListener('touchcancel', () => {
-  comboStop([0,1],'cmbAB');
-  comboStop([1,2],'cmbBC');
-  comboStop([0,2],'cmbAC');
-});
-
-// Kill all on tab close
 window.addEventListener('beforeunload', () => {
   navigator.sendBeacon('/api/poweroff', '');
 });
 
-// ── Force ─────────────────────────────────────────────────
 function updateForceSlider(v){
   const a=(parseInt(v)/100).toFixed(2);
   document.getElementById('forceSliderVal').textContent=a+'A';
@@ -712,7 +698,6 @@ async function sendForce(){
   catch(e){lg('Error: '+e,'er');}
 }
 
-// ── Mode ──────────────────────────────────────────────────
 function setMode(mode){
   currentMode=mode;
   document.querySelectorAll('.modeBtn').forEach(b=>b.classList.remove('active'));
@@ -723,7 +708,6 @@ function setMode(mode){
   lg('Mode → '+mode,'warn');
 }
 
-// ── Grab actions ──────────────────────────────────────────
 async function autoGrab(){
   lg('▶ Auto grab — '+currentMode,'warn');
   try{await post('/api/grab',`mode=${currentMode}`);lg('Done','ok');}
@@ -758,13 +742,11 @@ async function powerOff(){
   }catch(e){lg('Error: '+e,'er');}
 }
 
-// ── Motion capture ────────────────────────────────────────
 async function recStart(){try{await post('/api/rec/start','');lg('⏺ Recording','warn');}catch(e){}}
 async function recStop() {try{await post('/api/rec/stop',''); lg('⏹ Stopped','ok');}catch(e){}}
 async function recPlay() {try{await post('/api/rec/play',''); lg('▶ Loop replay','ok');}catch(e){}}
 async function recStopPlay(){try{await post('/api/rec/stopplay','');lg('⏸ Paused','warn');}catch(e){}}
 
-// ── Poll ──────────────────────────────────────────────────
 async function poll(){
   try{
     const d=await(await fetch('/api/status')).json();
@@ -810,7 +792,7 @@ setInterval(async()=>{
   }catch(e){}
 },600);
 
-lg('OctoGrip v8 ready 🐙','ok');
+lg('OctoGrip v7 ready 🐙','ok');
 </script>
 </body>
 </html>)HTML");
@@ -874,7 +856,7 @@ void setup() {
   unsigned long _t=millis();
   while(!Serial&&millis()-_t<3000);
   delay(200);
-  Serial.println("\n>>> OCTOGRIP v8 <<<");
+  Serial.println("\n>>> OCTOGRIP v7 <<<");
 
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
