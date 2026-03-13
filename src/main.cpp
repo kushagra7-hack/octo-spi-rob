@@ -51,9 +51,9 @@ int      recordCount = 0;
 bool     isRecording = false;
 bool     isReplaying = false;
 
-uint32_t replayDelayMs = 50;
+uint32_t replayDelayMs           = 20;   // playback speed, adjustable (20-500ms)
+const uint32_t RECORD_INTERVAL_MS  = 20;   // recording sample rate, always 20ms (~50fps)
 
-void captureFrame();
 void disableMotor(uint8_t id);
 void disableAll();
 String buildJSON();
@@ -74,7 +74,6 @@ void setMotor(uint8_t id, int val) {
   
   if (val < 0) { 
     disableMotor(id); 
-    if (id != M_UPDOWN_2) captureFrame(); 
     return; 
   }
   
@@ -88,8 +87,6 @@ void setMotor(uint8_t id, int val) {
   motorState[id] = (int)us;
   uint16_t tick = (uint16_t)(us * ((uint32_t)SERVO_FREQ_HZ * 4096UL) / 1000000UL);
   pca.setPWM(id, 0, tick);
-  
-  if (id != M_UPDOWN_2) captureFrame();
 }
 
 void setUpDown(int val) {
@@ -99,23 +96,39 @@ void setUpDown(int val) {
 
 void homeAll() { disableAll(); }
 
-void captureFrame() {
-  if (!isRecording || !recording) return;
-  if (recordCount >= MAX_FRAMES) { isRecording = false; return; }
-  for (uint8_t i = 0; i < TOTAL_MOTORS; i++)
-    recording[recordCount].val[i] = motorState[i];
-  recordCount++;
-}
-
-void startRecording() {
-  recordCount  = 0;
-  isRecording  = true;
-  isReplaying  = false;
+// Time-based recording loop: captures full state snapshot every RECORD_INTERVAL_MS (20ms).
+// Recording is always at 20ms (~50fps) regardless of replay speed.
+void recordingLoop() {
+  recordCount = 0;
+  isRecording = true;
+  isReplaying = false;
+  while (isRecording) {
+    if (recordCount >= MAX_FRAMES) { isRecording = false; break; }
+    for (uint8_t i = 0; i < TOTAL_MOTORS; i++)
+      recording[recordCount].val[i] = motorState[i];
+    recordCount++;
+    uint32_t t0 = millis();
+    while (isRecording && (millis() - t0 < RECORD_INTERVAL_MS)) {
+      server.handleClient();
+      yield();
+      delay(5);
+    }
+  }
+  isRecording = false;
+  // Stop all continuous rotation motors when recording ends
+  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
+    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue; // position servos hold OK
+    disableMotor(i);
+  }
 }
 
 void stopRecording() {
   isRecording = false;
-  isReplaying = false;
+  // Stop all continuous rotation motors on manual stop too
+  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
+    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue;
+    disableMotor(i);
+  }
 }
 
 void replayRecording() {
@@ -141,9 +154,21 @@ void replayRecording() {
     }
   }
   isReplaying = false;
+  // Stop all continuous rotation motors when replay ends
+  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
+    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue;
+    disableMotor(i);
+  }
 }
 
-void stopReplay() { isReplaying = false; }
+void stopReplay() {
+  isReplaying = false;
+  // Stop all continuous rotation motors on manual stop too
+  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
+    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue;
+    disableMotor(i);
+  }
+}
 
 float readCurrent(uint8_t pin) {
   long sum = 0;
@@ -370,7 +395,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
         ontouchstart="window._touch=true; comboStart([0,1],2000,'cab01f'); event.preventDefault()"
         onmouseup="comboStop([0,1],'cab01f')"
         ontouchend="window._touch=false; comboStop([0,1],'cab01f'); event.preventDefault()"
-        onmouseleave="comboStop([0,1],'cab01f')" id="cab01f">
+        onmouseleave="if(!window._touch)comboStop([0,1],'cab01f')" id="cab01f">
         ▶ FWD<br><small style="font-size:.65rem">Hold</small>
       </button>
       <button class="cbtn rev"
@@ -378,7 +403,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
         ontouchstart="window._touch=true; comboStart([0,1],1000,'cab01r'); event.preventDefault()"
         onmouseup="comboStop([0,1],'cab01r')"
         ontouchend="window._touch=false; comboStop([0,1],'cab01r'); event.preventDefault()"
-        onmouseleave="comboStop([0,1],'cab01r')" id="cab01r">
+        onmouseleave="if(!window._touch)comboStop([0,1],'cab01r')" id="cab01r">
         ◀ REV<br><small style="font-size:.65rem">Hold</small>
       </button>
     </div>
@@ -389,7 +414,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
         ontouchstart="window._touch=true; comboStart([1,2],2000,'cab12f'); event.preventDefault()"
         onmouseup="comboStop([1,2],'cab12f')"
         ontouchend="window._touch=false; comboStop([1,2],'cab12f'); event.preventDefault()"
-        onmouseleave="comboStop([1,2],'cab12f')" id="cab12f">
+        onmouseleave="if(!window._touch)comboStop([1,2],'cab12f')" id="cab12f">
         ▶ FWD<br><small style="font-size:.65rem">Hold</small>
       </button>
       <button class="cbtn rev"
@@ -397,7 +422,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
         ontouchstart="window._touch=true; comboStart([1,2],1000,'cab12r'); event.preventDefault()"
         onmouseup="comboStop([1,2],'cab12r')"
         ontouchend="window._touch=false; comboStop([1,2],'cab12r'); event.preventDefault()"
-        onmouseleave="comboStop([1,2],'cab12r')" id="cab12r">
+        onmouseleave="if(!window._touch)comboStop([1,2],'cab12r')" id="cab12r">
         ◀ REV<br><small style="font-size:.65rem">Hold</small>
       </button>
     </div>
@@ -408,7 +433,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
         ontouchstart="window._touch=true; comboStart([0,2],2000,'cab02f'); event.preventDefault()"
         onmouseup="comboStop([0,2],'cab02f')"
         ontouchend="window._touch=false; comboStop([0,2],'cab02f'); event.preventDefault()"
-        onmouseleave="comboStop([0,2],'cab02f')" id="cab02f">
+        onmouseleave="if(!window._touch)comboStop([0,2],'cab02f')" id="cab02f">
         ▶ FWD<br><small style="font-size:.65rem">Hold</small>
       </button>
       <button class="cbtn rev"
@@ -416,7 +441,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
         ontouchstart="window._touch=true; comboStart([0,2],1000,'cab02r'); event.preventDefault()"
         onmouseup="comboStop([0,2],'cab02r')"
         ontouchend="window._touch=false; comboStop([0,2],'cab02r'); event.preventDefault()"
-        onmouseleave="comboStop([0,2],'cab02r')" id="cab02r">
+        onmouseleave="if(!window._touch)comboStop([0,2],'cab02r')" id="cab02r">
         ◀ REV<br><small style="font-size:.65rem">Hold</small>
       </button>
     </div>
@@ -491,7 +516,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
 
   <div class="delay-row">
     <span class="delay-label">⏱ REPLAY SPEED</span>
-    <input type="range" id="delaySlider" min="10" max="200" value="50"
+    <input type="range" id="delaySlider" min="20" max="500" value="20"
            oninput="updateDelaySlider(this.value)"
            style="flex:1;min-width:120px;--mc:var(--ca);accent-color:var(--ca)">
     <span class="delay-val" id="delayVal">50ms</span>
@@ -619,7 +644,7 @@ function buildBaseCard(cid) {
         ontouchstart="window._touch=true; baseHold(2000,'bfwd'); event.preventDefault()"
         onmouseup="baseRelease('bfwd')" 
         ontouchend="window._touch=false; baseRelease('bfwd'); event.preventDefault()"
-        onmouseleave="baseRelease('bfwd')" id="bfwd"
+        onmouseleave="if(!window._touch)baseRelease('bfwd')" id="bfwd"
         style="flex:1;padding:9px;border-radius:8px;border:1px solid ${color};
           background:transparent;color:${color};font-family:'Rajdhani',sans-serif;
           font-weight:700;font-size:.82rem;cursor:pointer;-webkit-tap-highlight-color:transparent">
@@ -629,7 +654,7 @@ function buildBaseCard(cid) {
         ontouchstart="window._touch=true; baseHold(1000,'brev'); event.preventDefault()"
         onmouseup="baseRelease('brev')" 
         ontouchend="window._touch=false; baseRelease('brev'); event.preventDefault()"
-        onmouseleave="baseRelease('brev')" id="brev"
+        onmouseleave="if(!window._touch)baseRelease('brev')" id="brev"
         style="flex:1;padding:9px;border-radius:8px;border:1px solid #ff3355;
           background:transparent;color:#ff3355;font-family:'Rajdhani',sans-serif;
           font-weight:700;font-size:.82rem;cursor:pointer;-webkit-tap-highlight-color:transparent">
@@ -1023,18 +1048,26 @@ void handleSetForce() {
   if(server.hasArg("limit")) forceLimit=constrain(server.arg("limit").toFloat(),0.05f,2.0f);
   server.send(200,"application/json","{\"ok\":1}");
 }
-void handleRecStart()    { startRecording(); server.send(200,"application/json","{\"ok\":1}"); }
-void handleRecStop()     { stopRecording();  server.send(200,"application/json","{\"ok\":1}"); }
+void handleRecStart() {
+  if (isRecording) { server.send(200,"application/json","{\"ok\":1}"); return; }
+  isReplaying = false; autoGrabRunning = false;
+  server.send(200,"application/json","{\"ok\":1}");
+  recordingLoop();
+}
+void handleRecStop()  { stopRecording(); server.send(200,"application/json","{\"ok\":1}"); }
 void handleRecPlay()     { 
   if (isReplaying) { server.send(200,"application/json","{\"ok\":1}"); return; } 
+  autoGrabRunning = false; // [FIX v14] stop autograb before replay to prevent nested loop crash
   server.send(200,"application/json","{\"ok\":1}"); 
   replayRecording(); 
 }
 
 void handleRecStopPlay() { stopReplay();     server.send(200,"application/json","{\"ok\":1}"); }
 void handleRecDelay() {
-  if(server.hasArg("ms"))
-    replayDelayMs = (uint32_t)constrain(server.arg("ms").toInt(), 10, 200);
+  if(!server.hasArg("ms")){ server.send(400,"application/json","{\"error\":\"Missing ms\"}"); return; } // [FIX v14]
+  int ms = server.arg("ms").toInt();
+  if(ms < 20 || ms > 500){ server.send(400,"application/json","{\"error\":\"ms out of range (20-500)\"}"); return; } // [FIX v16]
+  replayDelayMs = (uint32_t)ms;
   server.send(200,"application/json","{\"ok\":1}");
 }
 void handleRecStatus() {
