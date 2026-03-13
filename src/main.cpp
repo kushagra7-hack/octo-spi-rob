@@ -22,16 +22,6 @@ const char* PASSWORD = "12345678";
 #define M_BASE        6
 #define TOTAL_MOTORS  7
 
-const char* MOTOR_NAME[TOTAL_MOTORS] = {
-  "Cable-A (Left curl)",
-  "Cable-B (Right curl)",
-  "Cable-C (Grab/Wrap)",
-  "UpDown Motor 1 (FT5330M)",
-  "UpDown Motor 2 (FT5330M inv)",
-  "Bend (FT5330M)",
-  "Base (Rotation)"
-};
-
 #define ACS712_SENS     0.185f
 #define ACS712_ZERO_V   1.65f
 #define ADC_VREF        3.3f
@@ -55,12 +45,13 @@ bool   autoGrabRunning          = false;
 String grabMode                 = "medium";
 
 #define MAX_FRAMES 1000
-struct Frame { int val[TOTAL_MOTORS]; uint32_t delayMs; };
-Frame*   recording   = nullptr;
+struct Frame { int val[TOTAL_MOTORS]; };
+Frame* recording   = nullptr;
 int      recordCount = 0;
 bool     isRecording = false;
 bool     isReplaying = false;
-uint32_t lastFrameMs = 0;
+
+uint32_t replayDelayMs = 50;
 
 void captureFrame();
 void disableMotor(uint8_t id);
@@ -80,7 +71,13 @@ void disableAll() {
 
 void setMotor(uint8_t id, int val) {
   if (id >= TOTAL_MOTORS) return;
-  if (val < 0) { disableMotor(id); captureFrame(); return; }
+  
+  if (val < 0) { 
+    disableMotor(id); 
+    if (id != M_UPDOWN_2) captureFrame(); 
+    return; 
+  }
+  
   uint32_t us;
   if (id == M_UPDOWN_1 || id == M_UPDOWN_2) {
     us = (uint32_t)constrain(val, 500, 2500);
@@ -91,7 +88,8 @@ void setMotor(uint8_t id, int val) {
   motorState[id] = (int)us;
   uint16_t tick = (uint16_t)(us * ((uint32_t)SERVO_FREQ_HZ * 4096UL) / 1000000UL);
   pca.setPWM(id, 0, tick);
-  captureFrame();
+  
+  if (id != M_UPDOWN_2) captureFrame();
 }
 
 void setUpDown(int val) {
@@ -104,33 +102,42 @@ void homeAll() { disableAll(); }
 void captureFrame() {
   if (!isRecording || !recording) return;
   if (recordCount >= MAX_FRAMES) { isRecording = false; return; }
-  uint32_t now = millis();
-  uint32_t dt  = (recordCount == 0) ? 0 : now - lastFrameMs;
-  lastFrameMs  = now;
   for (uint8_t i = 0; i < TOTAL_MOTORS; i++)
     recording[recordCount].val[i] = motorState[i];
-  recording[recordCount].delayMs = dt;
   recordCount++;
 }
 
-void startRecording() { recordCount=0; isRecording=true; isReplaying=false; lastFrameMs=millis(); }
-void stopRecording()  { isRecording=false; }
+void startRecording() {
+  recordCount  = 0;
+  isRecording  = true;
+  isReplaying  = false;
+}
+
+void stopRecording() {
+  isRecording = false;
+  isReplaying = false;
+}
 
 void replayRecording() {
   if (recordCount == 0) return;
+  isRecording = false; // [FIX v13] prevent buffer corruption during replay
   isReplaying = true;
   while (isReplaying) {
     for (int f = 0; f < recordCount; f++) {
       if (!isReplaying) break;
-      server.handleClient();
-      yield();
-      if (recording[f].delayMs > 0) delay(constrain(recording[f].delayMs, 10, 2000));
+
       for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
-        if (!isReplaying) break;
         if (i == M_UPDOWN_2) continue;
         setMotor(i, recording[f].val[i]);
       }
       setMotor(M_UPDOWN_2, recording[f].val[M_UPDOWN_1]);
+
+      uint32_t t0 = millis();
+      while (isReplaying && (millis() - t0 < replayDelayMs)) {
+        server.handleClient();
+        yield();
+        delay(5);
+      }
     }
   }
   isReplaying = false;
@@ -157,9 +164,10 @@ void autoGrab() {
   delay(300);
   while (autoGrabRunning && (a_run||b_run||c_run)) {
     delay(25); server.handleClient(); updateCurrents();
-    if (a_run && abs(cabCurrent[0])>=forceLimit) { disableMotor(M_CABLE_A); a_run=false; }
-    if (b_run && abs(cabCurrent[1])>=forceLimit) { disableMotor(M_CABLE_B); b_run=false; }
-    if (c_run && abs(cabCurrent[2])>=forceLimit) { disableMotor(M_CABLE_C); c_run=false; }
+    
+    if (a_run && fabsf(cabCurrent[0])>=forceLimit) { disableMotor(M_CABLE_A); a_run=false; }
+    if (b_run && fabsf(cabCurrent[1])>=forceLimit) { disableMotor(M_CABLE_B); b_run=false; }
+    if (c_run && fabsf(cabCurrent[2])>=forceLimit) { disableMotor(M_CABLE_C); c_run=false; }
     if (millis()-startT > 12000) break;
   }
   disableMotor(M_CABLE_A); disableMotor(M_CABLE_B); disableMotor(M_CABLE_C);
@@ -176,12 +184,13 @@ void openGripper() {
 String buildJSON() {
   updateCurrents();
   String j = "{";
-  j += "\"ip\":\""        + WiFi.localIP().toString() + "\"";
-  j += ",\"rssi\":"       + String(WiFi.RSSI());
-  j += ",\"uptime\":"     + String(millis()/1000);
-  j += ",\"grabMode\":\"" + grabMode + "\"";
-  j += ",\"forceLimit\":" + String(forceLimit,3);
-  j += ",\"autoGrab\":"   + String(autoGrabRunning?"true":"false");
+  j += "\"ip\":\""          + WiFi.localIP().toString() + "\"";
+  j += ",\"rssi\":"         + String(WiFi.RSSI());
+  j += ",\"uptime\":"       + String(millis()/1000);
+  j += ",\"grabMode\":\""   + grabMode + "\"";
+  j += ",\"forceLimit\":"   + String(forceLimit,3);
+  j += ",\"autoGrab\":"     + String(autoGrabRunning?"true":"false");
+  j += ",\"replayDelay\":"  + String(replayDelayMs);
   j += ",\"motors\":[";
   for (uint8_t i=0; i<TOTAL_MOTORS; i++) {
     if (i) j+=",";
@@ -231,7 +240,7 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .modeBtn.soft{border-color:#00ffc8;color:#00ffc8}.modeBtn.soft.active{background:#00ffc818}
 .modeBtn.medium{border-color:#ffcc00;color:#ffcc00}.modeBtn.medium.active{background:#ffcc0018}
 .modeBtn.hard{border-color:#ff5e3a;color:#ff5e3a}.modeBtn.hard.active{background:#ff5e3a18}
-.grab-btns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.grab-btns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
 .gbtn{flex:1;min-width:100px;padding:12px;border-radius:10px;border:none;
   font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1rem;
   cursor:pointer;transition:all .2s;letter-spacing:.08em}
@@ -240,22 +249,23 @@ h1{text-align:center;font-size:clamp(1.3rem,4vw,2rem);font-weight:700;
 .btn-open{background:transparent;border:2px solid var(--ca);color:var(--ca)}
 .btn-kill{background:transparent;border:2px solid var(--red);color:var(--red)}
 .btn-home{background:transparent;border:2px solid var(--dim);color:var(--dim)}
-.combo-section{margin-top:14px;background:#0a1020;border:1px solid var(--border);
-  border-radius:10px;padding:12px 14px}
-.combo-label{font-family:'Share Tech Mono',monospace;font-size:.7rem;
+.combo-section{margin-top:6px;background:#0a1020;border:1px solid var(--border);
+  border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.combo-lbl-hdr{font-family:'Share Tech Mono',monospace;font-size:.65rem;
   color:var(--dim);letter-spacing:.1em;margin-bottom:10px}
 .combo-row{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.combo-row:last-child{margin-bottom:0}
 .combo-tag{font-family:'Share Tech Mono',monospace;font-size:.65rem;
-  color:var(--dim);min-width:60px}
+  color:var(--dim);min-width:58px;flex-shrink:0}
 .cbtn{flex:1;padding:11px 6px;border-radius:9px;border:2px solid;
   background:transparent;font-family:'Rajdhani',sans-serif;font-weight:700;
   font-size:.88rem;cursor:pointer;transition:all .15s;text-align:center;
-  line-height:1.3;-webkit-tap-highlight-color:transparent}
-.cbtn:active{filter:brightness(1.3);transform:scale(.97)}
-.cbtn.fwd{border-color:var(--fwdcol,#00ffc8);color:var(--fwdcol,#00ffc8)}
-.cbtn.fwd:active{background:rgba(0,255,200,.15)}
-.cbtn.rev{border-color:#ff3355;color:#ff3355}
-.cbtn.rev:active{background:rgba(255,51,85,.15)}
+  line-height:1.3;-webkit-tap-highlight-color:transparent;touch-action:none}
+.cbtn:active,.cbtn.held{filter:brightness(1.3);transform:scale(.97)}
+.cbtn.fwd-ab{border-color:#00ffc8;color:#00ffc8}.cbtn.fwd-ab.held{background:#00ffc820}
+.cbtn.fwd-bc{border-color:#ffcc00;color:#ffcc00}.cbtn.fwd-bc.held{background:#ffcc0020}
+.cbtn.fwd-ac{border-color:#a78bfa;color:#a78bfa}.cbtn.fwd-ac.held{background:#a78bfa20}
+.cbtn.rev{border-color:#ff3355;color:#ff3355}.cbtn.rev.held{background:#ff335520}
 .curr-row{display:flex;gap:8px;flex-wrap:wrap}
 .curr-box{flex:1;min-width:70px;background:#0a1020;border:1px solid var(--border);
   border-radius:8px;padding:10px;text-align:center}
@@ -303,10 +313,21 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
   text-align:right;margin-bottom:4px;height:1.1em}
 .dual-badge{font-size:.58rem;background:#1a2540;padding:2px 6px;border-radius:4px;
   border:1px solid #7b6cff;color:#7b6cff;margin-left:4px}
+.ondemand-badge{font-size:.58rem;background:#1a1a10;padding:2px 6px;border-radius:4px;
+  border:1px solid #ff8800;color:#ff8800;margin-left:4px}
+.ch6-notice{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:#ff8800;
+  text-align:center;margin-bottom:6px;padding:5px 8px;background:#1a1a0a;
+  border-radius:6px;border:1px solid #ff880033}
 .rec-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
 .rec-dot.recording{background:var(--red);animation:blink .5s infinite}
 .rec-dot.replaying{background:var(--ca);animation:blink .5s infinite}
 .rec-dot.idle{background:var(--dim)}
+.delay-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:#0a1020;border:1px solid var(--border);border-radius:8px;
+  padding:10px 14px;margin-top:12px}
+.delay-label{font-family:'Share Tech Mono',monospace;font-size:.68rem;color:var(--dim);min-width:100px}
+.delay-val{font-family:'Share Tech Mono',monospace;font-size:1rem;font-weight:700;
+  color:var(--ca);min-width:50px;text-align:right}
 .sbar{background:#06080f;border:1px solid var(--border);border-radius:8px;
   padding:9px 14px;max-width:980px;margin:12px auto;position:relative;z-index:1;
   font-family:'Share Tech Mono',monospace;font-size:.68rem;color:var(--dim);
@@ -324,9 +345,8 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
 </head>
 <body>
 <h1>🐙 OCTOGRIP ROBOT</h1>
-<p class="sub">ESP32-S3 · 7× Continuous · FT5330M CH3+CH4+CH5 · ACS712 Force</p>
+<p class="sub">ESP32-S3 · 7× Continuous · FT5330M CH3+CH4+CH5 · ACS712 Force · v12</p>
 
-<!-- GRAB PANEL -->
 <div class="panel">
   <div class="ph">// AUTO GRAB — PARALLEL FORCE CONTROL</div>
   <div class="mode-row">
@@ -341,64 +361,68 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
     <button class="gbtn btn-home" onclick="homeAll()">⌂ HOME</button>
   </div>
 
-  <!-- COMBO HOLD BUTTONS -->
   <div class="combo-section">
-    <div class="combo-label">// COMBO HOLD BUTTONS — HOLD TO RUN · RELEASE TO STOP</div>
-
-    <!-- CH0 + CH1 -->
+    <div class="combo-lbl-hdr">// COMBO HOLD — HOLD TO RUN · RELEASE TO STOP</div>
     <div class="combo-row">
       <span class="combo-tag">CH0+CH1</span>
-      <button class="cbtn fwd" style="--fwdcol:#00ffc8"
-        onmousedown="comboStart([0,1],2000)" ontouchstart="comboStart([0,1],2000)"
-        onmouseup="comboStop([0,1])"         ontouchend="comboStop([0,1])"
-        onmouseleave="comboStop([0,1])">
-        ▶ FWD<br><small style="font-size:.68rem">Hold</small>
+      <button class="cbtn fwd-ab"
+        onmousedown="if(!window._touch)comboStart([0,1],2000,'cab01f')"
+        ontouchstart="window._touch=true; comboStart([0,1],2000,'cab01f'); event.preventDefault()"
+        onmouseup="comboStop([0,1],'cab01f')"
+        ontouchend="window._touch=false; comboStop([0,1],'cab01f'); event.preventDefault()"
+        onmouseleave="comboStop([0,1],'cab01f')" id="cab01f">
+        ▶ FWD<br><small style="font-size:.65rem">Hold</small>
       </button>
       <button class="cbtn rev"
-        onmousedown="comboStart([0,1],1000)" ontouchstart="comboStart([0,1],1000)"
-        onmouseup="comboStop([0,1])"         ontouchend="comboStop([0,1])"
-        onmouseleave="comboStop([0,1])">
-        ◀ REV<br><small style="font-size:.68rem">Hold</small>
+        onmousedown="if(!window._touch)comboStart([0,1],1000,'cab01r')"
+        ontouchstart="window._touch=true; comboStart([0,1],1000,'cab01r'); event.preventDefault()"
+        onmouseup="comboStop([0,1],'cab01r')"
+        ontouchend="window._touch=false; comboStop([0,1],'cab01r'); event.preventDefault()"
+        onmouseleave="comboStop([0,1],'cab01r')" id="cab01r">
+        ◀ REV<br><small style="font-size:.65rem">Hold</small>
       </button>
     </div>
-
-    <!-- CH1 + CH2 -->
     <div class="combo-row">
       <span class="combo-tag">CH1+CH2</span>
-      <button class="cbtn fwd" style="--fwdcol:#ffcc00"
-        onmousedown="comboStart([1,2],2000)" ontouchstart="comboStart([1,2],2000)"
-        onmouseup="comboStop([1,2])"         ontouchend="comboStop([1,2])"
-        onmouseleave="comboStop([1,2])">
-        ▶ FWD<br><small style="font-size:.68rem">Hold</small>
+      <button class="cbtn fwd-bc"
+        onmousedown="if(!window._touch)comboStart([1,2],2000,'cab12f')"
+        ontouchstart="window._touch=true; comboStart([1,2],2000,'cab12f'); event.preventDefault()"
+        onmouseup="comboStop([1,2],'cab12f')"
+        ontouchend="window._touch=false; comboStop([1,2],'cab12f'); event.preventDefault()"
+        onmouseleave="comboStop([1,2],'cab12f')" id="cab12f">
+        ▶ FWD<br><small style="font-size:.65rem">Hold</small>
       </button>
       <button class="cbtn rev"
-        onmousedown="comboStart([1,2],1000)" ontouchstart="comboStart([1,2],1000)"
-        onmouseup="comboStop([1,2])"         ontouchend="comboStop([1,2])"
-        onmouseleave="comboStop([1,2])">
-        ◀ REV<br><small style="font-size:.68rem">Hold</small>
+        onmousedown="if(!window._touch)comboStart([1,2],1000,'cab12r')"
+        ontouchstart="window._touch=true; comboStart([1,2],1000,'cab12r'); event.preventDefault()"
+        onmouseup="comboStop([1,2],'cab12r')"
+        ontouchend="window._touch=false; comboStop([1,2],'cab12r'); event.preventDefault()"
+        onmouseleave="comboStop([1,2],'cab12r')" id="cab12r">
+        ◀ REV<br><small style="font-size:.65rem">Hold</small>
       </button>
     </div>
-
-    <!-- CH0 + CH2 -->
-    <div class="combo-row" style="margin-bottom:0">
+    <div class="combo-row">
       <span class="combo-tag">CH0+CH2</span>
-      <button class="cbtn fwd" style="--fwdcol:#a78bfa"
-        onmousedown="comboStart([0,2],2000)" ontouchstart="comboStart([0,2],2000)"
-        onmouseup="comboStop([0,2])"         ontouchend="comboStop([0,2])"
-        onmouseleave="comboStop([0,2])">
-        ▶ FWD<br><small style="font-size:.68rem">Hold</small>
+      <button class="cbtn fwd-ac"
+        onmousedown="if(!window._touch)comboStart([0,2],2000,'cab02f')"
+        ontouchstart="window._touch=true; comboStart([0,2],2000,'cab02f'); event.preventDefault()"
+        onmouseup="comboStop([0,2],'cab02f')"
+        ontouchend="window._touch=false; comboStop([0,2],'cab02f'); event.preventDefault()"
+        onmouseleave="comboStop([0,2],'cab02f')" id="cab02f">
+        ▶ FWD<br><small style="font-size:.65rem">Hold</small>
       </button>
       <button class="cbtn rev"
-        onmousedown="comboStart([0,2],1000)" ontouchstart="comboStart([0,2],1000)"
-        onmouseup="comboStop([0,2])"         ontouchend="comboStop([0,2])"
-        onmouseleave="comboStop([0,2])">
-        ◀ REV<br><small style="font-size:.68rem">Hold</small>
+        onmousedown="if(!window._touch)comboStart([0,2],1000,'cab02r')"
+        ontouchstart="window._touch=true; comboStart([0,2],1000,'cab02r'); event.preventDefault()"
+        onmouseup="comboStop([0,2],'cab02r')"
+        ontouchend="window._touch=false; comboStop([0,2],'cab02r'); event.preventDefault()"
+        onmouseleave="comboStop([0,2],'cab02r')" id="cab02r">
+        ◀ REV<br><small style="font-size:.65rem">Hold</small>
       </button>
     </div>
   </div>
 
-  <!-- CURRENT DISPLAY -->
-  <div class="curr-row" style="margin-top:14px">
+  <div class="curr-row">
     <div class="curr-box"><div class="curr-label">CABLE-A·CH0</div>
       <div class="curr-val" id="cc0">0.000A</div>
       <div class="curr-bar"><div class="curr-fill" id="cb0" style="background:#00ffc8;width:0%"></div></div></div>
@@ -426,11 +450,10 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
   </div>
 </div>
 
-<!-- MOTION CAPTURE -->
 <div class="panel">
-  <div class="ph">// MOTION CAPTURE — LOOP REPLAY</div>
+  <div class="ph">// MOTION CAPTURE — FIXED DELAY LOOP REPLAY</div>
   <div style="background:#0a1020;border:1px solid var(--border);border-radius:10px;
-    padding:14px;margin-bottom:14px;text-align:center">
+    padding:14px;margin-bottom:12px;text-align:center">
     <div style="display:flex;align-items:center;justify-content:center;gap:10px">
       <span class="rec-dot idle" id="recDot"></span>
       <span id="recStatus" style="font-size:1.1rem;font-weight:700;
@@ -446,7 +469,8 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
         width:0%;transition:width .3s;border-radius:3px"></div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
     <button id="btnRecord" onclick="recStart()" style="padding:18px;border-radius:12px;
       border:2px solid var(--red);background:transparent;color:var(--red);
       font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1.1rem;cursor:pointer">
@@ -464,18 +488,32 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
       font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1.1rem;cursor:pointer">
       ⏸<br><span style="font-size:.8rem">STOP PLAY</span></button>
   </div>
+
+  <div class="delay-row">
+    <span class="delay-label">⏱ REPLAY SPEED</span>
+    <input type="range" id="delaySlider" min="10" max="200" value="50"
+           oninput="updateDelaySlider(this.value)"
+           style="flex:1;min-width:120px;--mc:var(--ca);accent-color:var(--ca)">
+    <span class="delay-val" id="delayVal">50ms</span>
+    <button onclick="sendDelay()" style="padding:8px 14px;border-radius:8px;border:none;
+      background:var(--ca);color:#000;font-family:'Rajdhani',sans-serif;
+      font-weight:700;cursor:pointer">SET</button>
+  </div>
+  <div style="display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;
+    font-size:.6rem;color:var(--dim);padding:3px 2px 0">
+    <span>10ms — FAST</span>
+    <span style="color:var(--dim)">No recorded timing — fixed delay per frame</span>
+    <span>200ms — SLOW</span>
+  </div>
 </div>
 
-<!-- TENTACLE SLIDERS -->
 <div class="sec-lbl">// TENTACLE CABLE WINCHES (CH0–CH2) — LIVE SPEED SLIDER</div>
 <div class="grid" id="tentGrid"></div>
 
-<!-- UPDOWN SLIDER -->
-<div class="sec-lbl">// UP/DOWN FT5330M (CH3+CH4) — LIVE SLIDER · CH4 AUTO-INVERTED</div>
+<div class="sec-lbl">// UP/DOWN FT5330M (CH3+CH4) — STARTS 63° · CH4 AUTO-INVERTED</div>
 <div class="grid" id="udGrid"></div>
 
-<!-- BEND & BASE SLIDERS -->
-<div class="sec-lbl">// BEND & BASE (CH5–CH6) — LIVE SPEED SLIDER</div>
+<div class="sec-lbl">// BEND (CH5 · starts 1000µs) &amp; BASE (CH6 · on-demand power)</div>
 <div class="grid" id="armContGrid"></div>
 
 <div class="sbar">
@@ -484,26 +522,29 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
   <div>UP: <span id="sup">—</span>s</div>
   <div>MODE: <span id="smode">medium</span></div>
   <div>GRAB: <span id="sgrab">idle</span></div>
+  <div>DELAY: <span id="sdelay">50</span>ms</div>
 </div>
 <div class="log" id="log"></div>
 
 <script>
 const MOTORS=[
-  {id:0,name:'Cable-A', sub:'Left curl',      color:'#00ffc8'},
-  {id:1,name:'Cable-B', sub:'Right curl',     color:'#ff5e3a'},
-  {id:2,name:'Cable-C', sub:'Grab/Wrap',      color:'#ffcc00'},
-  {id:5,name:'Bend',    sub:'FT5330M',        color:'#a78bfa'},
-  {id:6,name:'Base',    sub:'Rotation CH6',   color:'#60a5fa'},
+  {id:0,name:'Cable-A', sub:'Left curl',    color:'#00ffc8'},
+  {id:1,name:'Cable-B', sub:'Right curl',   color:'#ff5e3a'},
+  {id:2,name:'Cable-C', sub:'Grab/Wrap',    color:'#ffcc00'},
+  {id:5,name:'Bend',    sub:'FT5330M CH5',  color:'#a78bfa'},
+  {id:6,name:'Base',    sub:'Rotation CH6', color:'#60a5fa'},
 ];
 const FORCES={soft:0.15,medium:0.38,hard:0.72};
 let currentMode='medium';
 
 function buildSliderCard(id, cid, opts={}) {
-  const m = MOTORS.find(x=>x.id===id) || {name:'Motor'+id,sub:'',color:'#7b6cff'};
-  const color = opts.color || m.color;
-  const label = opts.label || m.name;
-  const sub   = opts.sub   || m.sub;
-  const ch    = opts.ch    || 'CH'+id;
+  const m      = MOTORS.find(x=>x.id===id) || {name:'Motor'+id,sub:'',color:'#7b6cff'};
+  const color  = opts.color || m.color;
+  const label  = opts.label || m.name;
+  const sub    = opts.sub   || m.sub;
+  const ch     = opts.ch    || 'CH'+id;
+  const defVal = opts.defVal !== undefined ? opts.defVal : 1500;
+  const defLbl = opts.defLbl || usToLabel(defVal);
   const showCurrent = id < 3;
   document.getElementById(cid).innerHTML += `
   <div class="card" style="--mc:${color}">
@@ -515,7 +556,7 @@ function buildSliderCard(id, cid, opts={}) {
       <div class="cch">${ch}</div>
     </div>
     ${showCurrent ? `<div class="curt" id="curt${id}">— A</div>` : '<div style="height:1.1em"></div>'}
-    <div class="sl-val" id="av${id}">STOP</div>
+    <div class="sl-val" id="av${id}">${defLbl}</div>
     <div class="sl-wrap">
       <div class="sl-labels">
         <span style="color:#ff5e3a">◀ REV</span>
@@ -523,7 +564,7 @@ function buildSliderCard(id, cid, opts={}) {
         <span style="color:${color}">FWD ▶</span>
       </div>
       <input type="range" id="sl${id}"
-             min="1000" max="2000" value="1500"
+             min="1000" max="2000" value="${defVal}"
              oninput="liveMotor(${id}, this.value)"
              style="--mc:${color}">
       <div class="sl-legend">
@@ -543,6 +584,61 @@ function buildSliderCard(id, cid, opts={}) {
   </div>`;
 }
 
+function buildBaseCard(cid) {
+  const color = '#60a5fa';
+  document.getElementById(cid).innerHTML += `
+  <div class="card" style="--mc:${color}">
+    <div class="card-head">
+      <div>
+        <div class="cname" style="color:${color}">Base
+          <span class="ondemand-badge">ON-DEMAND</span>
+        </div>
+        <div class="csub">Rotation CH6</div>
+      </div>
+      <div class="cch">CH6</div>
+    </div>
+    <div class="ch6-notice" id="ch6notice">⚡ NO POWER — move slider or press FWD/REV to activate</div>
+    <div class="sl-val" id="av6">IDLE</div>
+    <div class="sl-wrap">
+      <div class="sl-labels">
+        <span style="color:#ff5e3a">◀ REV</span>
+        <span>STOP/OFF</span>
+        <span style="color:${color}">FWD ▶</span>
+      </div>
+      <input type="range" id="sl6" min="1000" max="2000" value="1500"
+             oninput="liveBase(this.value)" style="--mc:${color}">
+      <div class="sl-legend">
+        <span style="color:#ff5e3a">1000µs</span>
+        <span style="color:var(--dim)">1500µs = OFF</span>
+        <span style="color:${color}">2000µs</span>
+      </div>
+    </div>
+    <div class="kill-row">
+      <button class="kill-btn" onclick="killBase()">🛑 KILL CH6</button>
+      <button onmousedown="if(!window._touch)baseHold(2000,'bfwd')" 
+        ontouchstart="window._touch=true; baseHold(2000,'bfwd'); event.preventDefault()"
+        onmouseup="baseRelease('bfwd')" 
+        ontouchend="window._touch=false; baseRelease('bfwd'); event.preventDefault()"
+        onmouseleave="baseRelease('bfwd')" id="bfwd"
+        style="flex:1;padding:9px;border-radius:8px;border:1px solid ${color};
+          background:transparent;color:${color};font-family:'Rajdhani',sans-serif;
+          font-weight:700;font-size:.82rem;cursor:pointer;-webkit-tap-highlight-color:transparent">
+        ▶ HOLD FWD
+      </button>
+      <button onmousedown="if(!window._touch)baseHold(1000,'brev')" 
+        ontouchstart="window._touch=true; baseHold(1000,'brev'); event.preventDefault()"
+        onmouseup="baseRelease('brev')" 
+        ontouchend="window._touch=false; baseRelease('brev'); event.preventDefault()"
+        onmouseleave="baseRelease('brev')" id="brev"
+        style="flex:1;padding:9px;border-radius:8px;border:1px solid #ff3355;
+          background:transparent;color:#ff3355;font-family:'Rajdhani',sans-serif;
+          font-weight:700;font-size:.82rem;cursor:pointer;-webkit-tap-highlight-color:transparent">
+        ◀ HOLD REV
+      </button>
+    </div>
+  </div>`;
+}
+
 function buildUDCard(cid) {
   document.getElementById(cid).innerHTML += `
   <div class="card" style="--mc:#7b6cff">
@@ -551,21 +647,19 @@ function buildUDCard(cid) {
         <div class="cname" style="color:#7b6cff">Up / Down (FT5330M)
           <span class="dual-badge">CH3+CH4</span>
         </div>
-        <div class="csub">same command · CH4 auto-inverted</div>
+        <div class="csub">same command · CH4 auto-inverted · starts 63°</div>
       </div>
       <div class="cch" style="color:#7b6cff;border-color:#7b6cff">DUAL</div>
     </div>
-    <div class="sl-val" id="av3">90°</div>
+    <div class="sl-val" id="av3">63°</div>
     <div class="sl-wrap">
       <div class="sl-labels">
         <span style="color:#ff5e3a">0°</span>
         <span>90° CENTER</span>
         <span style="color:#7b6cff">180°</span>
       </div>
-      <input type="range" id="sl3"
-             min="500" max="2500" value="1500"
-             oninput="liveUD(this.value)"
-             style="--mc:#7b6cff">
+      <input type="range" id="sl3" min="500" max="2500" value="1200"
+             oninput="liveUD(this.value)" style="--mc:#7b6cff">
       <div class="sl-legend">
         <span style="color:#ff5e3a">0° (500µs)</span>
         <span style="color:var(--dim)">90° (1500µs)</span>
@@ -577,7 +671,7 @@ function buildUDCard(cid) {
       <button onclick="snapUD()" style="flex:1;padding:9px;border-radius:8px;
         border:1px solid #7b6cff;background:transparent;color:#7b6cff;
         font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.82rem;cursor:pointer">
-        ⊙ CENTER / STOP
+        ⊙ 90° CENTER
       </button>
     </div>
   </div>`;
@@ -585,8 +679,10 @@ function buildUDCard(cid) {
 
 [0,1,2].forEach(id => buildSliderCard(id, 'tentGrid'));
 buildUDCard('udGrid');
-[5,6].forEach(id => buildSliderCard(id, 'armContGrid'));
+buildSliderCard(5, 'armContGrid', {defVal:1000, defLbl:'◀ REV 1000µs'});
+buildBaseCard('armContGrid');
 
+// ── Helpers ───────────────────────────────────────────────
 function lg(msg,cls=''){
   const d=document.getElementById('log'),e=document.createElement('div');
   e.className='le '+cls;
@@ -597,94 +693,133 @@ async function post(ep,body){
   return fetch(ep,{method:'POST',
     headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
 }
-
-function usToLabel(us, isPosition=false) {
-  us = parseInt(us);
-  if (isPosition) {
-    const deg = Math.round((us - 500) / (2500-500) * 180);
-    return deg + '°';
-  }
-  if (us === 1500) return 'STOP';
-  if (us < 1500)  return `◀ REV ${us}µs`;
+function usToLabel(us) {
+  us=parseInt(us);
+  if(us===1500) return 'STOP';
+  if(us<1500)   return `◀ REV ${us}µs`;
   return `FWD ${us}µs ▶`;
 }
 
+// ── Motor sliders ─────────────────────────────────────────
 function liveMotor(id, val) {
-  val = parseInt(val);
-  document.getElementById('av'+id).textContent = usToLabel(val);
+  val=parseInt(val);
+  document.getElementById('av'+id).textContent=usToLabel(val);
   clearTimeout(window['t'+id]);
-  window['t'+id] = setTimeout(async () => {
-    try { await post('/api/motor', `id=${id}&angle=${val}`); }
-    catch(e) { lg('err motor '+id, 'er'); }
-  }, 25);
+  window['t'+id]=setTimeout(async()=>{
+    try{await post('/api/motor',`id=${id}&angle=${val}`);}
+    catch(e){lg('err motor '+id,'er');}
+  },25);
 }
-
 function liveUD(val) {
-  val = parseInt(val);
-  const deg = Math.round((val - 500) / 2000 * 180);
-  document.getElementById('av3').textContent = deg + '°';
+  val=parseInt(val);
+  const deg=Math.round((val-500)/2000*180);
+  document.getElementById('av3').textContent=deg+'°';
   clearTimeout(window.tud);
-  window.tud = setTimeout(async () => {
-    try { await post('/api/updown', `angle=${val}`); }
-    catch(e) { lg('err updown', 'er'); }
-  }, 25);
+  window.tud=setTimeout(async()=>{
+    try{await post('/api/updown',`angle=${val}`);}
+    catch(e){lg('err updown','er');}
+  },25);
+}
+function liveBase(val) {
+  val=parseInt(val);
+  const notice=document.getElementById('ch6notice');
+  if(val===1500){
+    document.getElementById('av6').textContent='IDLE';
+    if(notice){notice.textContent='⚡ NO POWER — move slider or press FWD/REV to activate';notice.style.color='#ff8800';}
+    post('/api/motor','id=6&angle=-1');
+  } else {
+    document.getElementById('av6').textContent=usToLabel(val);
+    if(notice){notice.textContent='✅ POWERED — '+usToLabel(val);notice.style.color='#3dffa0';}
+    clearTimeout(window.t6);
+    window.t6=setTimeout(async()=>{
+      try{await post('/api/motor',`id=6&angle=${val}`);}
+      catch(e){lg('err base','er');}
+    },25);
+  }
+}
+function baseHold(speed,btnId){
+  const sl=document.getElementById('sl6');if(sl)sl.value=speed;
+  const notice=document.getElementById('ch6notice');
+  document.getElementById('av6').textContent=usToLabel(speed);
+  if(notice){notice.textContent='✅ POWERED — '+usToLabel(speed);notice.style.color='#3dffa0';}
+  const btn=document.getElementById(btnId);if(btn)btn.style.opacity='0.6';
+  post('/api/motor',`id=6&angle=${speed}`);
+  lg('Base CH6 → '+(speed===2000?'FWD':'REV'),'warn');
+}
+function baseRelease(btnId){
+  const sl=document.getElementById('sl6');if(sl)sl.value=1500;
+  const notice=document.getElementById('ch6notice');
+  document.getElementById('av6').textContent='IDLE';
+  if(notice){notice.textContent='⚡ NO POWER — move slider or press FWD/REV to activate';notice.style.color='#ff8800';}
+  const btn=document.getElementById(btnId);if(btn)btn.style.opacity='1';
+  post('/api/motor','id=6&angle=-1');
+}
+function killBase(){
+  const sl=document.getElementById('sl6');if(sl)sl.value=1500;
+  const notice=document.getElementById('ch6notice');
+  document.getElementById('av6').textContent='IDLE';
+  if(notice){notice.textContent='⚡ NO POWER — move slider or press FWD/REV to activate';notice.style.color='#ff8800';}
+  post('/api/motor','id=6&angle=-1');
+  lg('Kill CH6','warn');
+}
+function killMotor(id){
+  const sl=document.getElementById('sl'+id);if(sl)sl.value=1500;
+  document.getElementById('av'+id).textContent='STOP';
+  post('/api/motor',`id=${id}&angle=-1`);
+  lg('Kill CH'+id,'warn');
 }
 
-function killMotor(id) {
-  const sl = document.getElementById('sl'+id);
-  if (sl) sl.value = 1500;
-  document.getElementById('av'+id).textContent = 'STOP';
-  post('/api/motor', `id=${id}&angle=-1`);
-  lg('Kill CH'+id, 'warn');
+function killUD(){
+  document.getElementById('av3').textContent='OFF';
+  post('/api/updown','angle=-1');
+  lg('Kill UpDown','warn');
 }
 
-function killUD() {
-  document.getElementById('sl3').value = 1500;
-  document.getElementById('av3').textContent = '90°';
-  post('/api/updown', 'angle=-1');
-  lg('Kill UpDown', 'warn');
+function snapCenter(id){
+  document.getElementById('sl'+id).value=1500;
+  document.getElementById('av'+id).textContent='STOP';
+  post('/api/motor',`id=${id}&angle=1500`);
+}
+function snapUD(){
+  document.getElementById('sl3').value=1500;
+  document.getElementById('av3').textContent='90°';
+  post('/api/updown','angle=1500');
 }
 
-function snapCenter(id) {
-  document.getElementById('sl'+id).value = 1500;
-  document.getElementById('av'+id).textContent = 'STOP';
-  post('/api/motor', `id=${id}&angle=1500`);
-}
-
-function snapUD() {
-  document.getElementById('sl3').value = 1500;
-  document.getElementById('av3').textContent = '90°';
-  post('/api/updown', 'angle=1500');
-}
-
-// ── Combo hold buttons ────────────────────────────────────
-function comboStart(ids, speed) {
-  ids.forEach(id => {
-    const sl = document.getElementById('sl' + id);
-    if (sl) sl.value = speed;
-    if (document.getElementById('av' + id))
-      document.getElementById('av' + id).textContent =
-        speed === 2000 ? 'FWD 2000µs ▶' : '◀ REV 1000µs';
-    post('/api/motor', `id=${id}&angle=${speed}`);
+// ── Combo hold ────────────────────────────────────────────
+function comboStart(ids,speed,btnId){
+  const btn=document.getElementById(btnId);if(btn)btn.classList.add('held');
+  ids.forEach(id=>{
+    const sl=document.getElementById('sl'+id);if(sl)sl.value=speed;
+    const av=document.getElementById('av'+id);if(av)av.textContent=usToLabel(speed);
+    post('/api/motor',`id=${id}&angle=${speed}`).catch(()=>{});
   });
   lg((speed===2000?'▶ FWD':'◀ REV')+' Combo CH'+ids.join('+CH')+' ON','warn');
 }
-
-function comboStop(ids) {
-  ids.forEach(id => {
-    const sl = document.getElementById('sl' + id);
-    if (sl) sl.value = 1500;
-    if (document.getElementById('av' + id))
-      document.getElementById('av' + id).textContent = 'STOP';
-    post('/api/motor', `id=${id}&angle=-1`);
+function comboStop(ids,btnId){
+  const btn=document.getElementById(btnId);if(btn)btn.classList.remove('held');
+  ids.forEach(id=>{
+    const sl=document.getElementById('sl'+id);if(sl)sl.value=1500;
+    const av=document.getElementById('av'+id);if(av)av.textContent='STOP';
+    post('/api/motor',`id=${id}&angle=-1`).catch(()=>{});
   });
   lg('⏹ Combo CH'+ids.join('+CH')+' OFF','ok');
 }
 
-window.addEventListener('beforeunload', () => {
-  navigator.sendBeacon('/api/poweroff', '');
+// [FIX v12] window._touch reset on touchcancel prevents the permanent lockout bug
+document.addEventListener('touchcancel',()=>{
+  window._touch = false; 
+  ['cab01f','cab01r','cab12f','cab12r','cab02f','cab02r'].forEach(id=>{
+    const b=document.getElementById(id);if(b)b.classList.remove('held');
+  });
+  comboStop([0,1],'cab01f');comboStop([0,1],'cab01r');
+  comboStop([1,2],'cab12f');comboStop([1,2],'cab12r');
+  comboStop([0,2],'cab02f');comboStop([0,2],'cab02r');
+  baseRelease('bfwd');baseRelease('brev');
 });
+window.addEventListener('beforeunload',()=>{ navigator.sendBeacon('/api/poweroff',''); });
 
+// ── Force ─────────────────────────────────────────────────
 function updateForceSlider(v){
   const a=(parseInt(v)/100).toFixed(2);
   document.getElementById('forceSliderVal').textContent=a+'A';
@@ -698,6 +833,20 @@ async function sendForce(){
   catch(e){lg('Error: '+e,'er');}
 }
 
+// ── Replay delay slider ───────────────────────────────────
+function updateDelaySlider(v){
+  document.getElementById('delayVal').textContent=v+'ms';
+}
+async function sendDelay(){
+  const v=parseInt(document.getElementById('delaySlider').value);
+  try{
+    await post('/api/rec/delay',`ms=${v}`);
+    document.getElementById('sdelay').textContent=v;
+    lg('Replay delay → '+v+'ms','ok');
+  }catch(e){lg('Error: '+e,'er');}
+}
+
+// ── Mode ──────────────────────────────────────────────────
 function setMode(mode){
   currentMode=mode;
   document.querySelectorAll('.modeBtn').forEach(b=>b.classList.remove('active'));
@@ -708,6 +857,7 @@ function setMode(mode){
   lg('Mode → '+mode,'warn');
 }
 
+// ── Grab actions ──────────────────────────────────────────
 async function autoGrab(){
   lg('▶ Auto grab — '+currentMode,'warn');
   try{await post('/api/grab',`mode=${currentMode}`);lg('Done','ok');}
@@ -717,36 +867,49 @@ async function openGripper(){
   try{await post('/api/open','');lg('Open','ok');}
   catch(e){lg('Error: '+e,'er');}
 }
+function resetAllSliders(){
+  [0,1,2].forEach(id=>{
+    const sl=document.getElementById('sl'+id);
+    if(sl){sl.value=1500;document.getElementById('av'+id).textContent='STOP';}
+  });
+  document.getElementById('sl3').value=1200;
+  document.getElementById('av3').textContent='63°';
+  const sl5=document.getElementById('sl5');
+  if(sl5){sl5.value=1000;document.getElementById('av5').textContent='◀ REV 1000µs';}
+  const sl6=document.getElementById('sl6');if(sl6)sl6.value=1500;
+  document.getElementById('av6').textContent='IDLE';
+  const notice=document.getElementById('ch6notice');
+  if(notice){notice.textContent='⚡ NO POWER — move slider or press FWD/REV to activate';notice.style.color='#ff8800';}
+}
 async function homeAll(){
-  try{
-    await post('/api/home','');
-    [0,1,2,5,6].forEach(id=>{
-      const sl=document.getElementById('sl'+id);
-      if(sl){sl.value=1500;document.getElementById('av'+id).textContent='STOP';}
-    });
-    document.getElementById('sl3').value=1500;
-    document.getElementById('av3').textContent='STOP';
-    lg('All → zero power','ok');
-  }catch(e){lg('Error: '+e,'er');}
+  try{await post('/api/home','');resetAllSliders();lg('All → zero power','ok');}
+  catch(e){lg('Error: '+e,'er');}
 }
 async function powerOff(){
-  try{
-    await post('/api/poweroff','');
-    [0,1,2,5,6].forEach(id=>{
-      const sl=document.getElementById('sl'+id);
-      if(sl){sl.value=1500;document.getElementById('av'+id).textContent='STOP';}
-    });
-    document.getElementById('sl3').value=1500;
-    document.getElementById('av3').textContent='STOP';
-    lg('⚡ ALL ZERO POWER','warn');
-  }catch(e){lg('Error: '+e,'er');}
+  try{await post('/api/poweroff','');resetAllSliders();lg('⚡ ALL ZERO POWER','warn');}
+  catch(e){lg('Error: '+e,'er');}
 }
 
-async function recStart(){try{await post('/api/rec/start','');lg('⏺ Recording','warn');}catch(e){}}
-async function recStop() {try{await post('/api/rec/stop',''); lg('⏹ Stopped','ok');}catch(e){}}
-async function recPlay() {try{await post('/api/rec/play',''); lg('▶ Loop replay','ok');}catch(e){}}
-async function recStopPlay(){try{await post('/api/rec/stopplay','');lg('⏸ Paused','warn');}catch(e){}}
+async function recStart(){
+  try{await post('/api/rec/start','');lg('⏺ Recording started — press buttons now','warn');}
+  catch(e){lg('Error: '+e,'er');}
+}
+async function recStop(){
+  try{
+    await post('/api/rec/stop','');
+    lg('⏹ Recording stopped','ok');
+  }catch(e){lg('Error: '+e,'er');}
+}
+async function recPlay(){
+  try{await post('/api/rec/play','');lg('▶ Loop replay started','ok');}
+  catch(e){lg('Error: '+e,'er');}
+}
+async function recStopPlay(){
+  try{await post('/api/rec/stopplay','');lg('⏸ Replay stopped','warn');}
+  catch(e){lg('Error: '+e,'er');}
+}
 
+// ── Poll status ───────────────────────────────────────────
 async function poll(){
   try{
     const d=await(await fetch('/api/status')).json();
@@ -755,13 +918,21 @@ async function poll(){
     document.getElementById('sup').textContent=d.uptime;
     document.getElementById('smode').textContent=d.grabMode;
     document.getElementById('sgrab').textContent=d.autoGrab?'GRABBING':'idle';
+    if(d.replayDelay!==undefined){
+      document.getElementById('sdelay').textContent=d.replayDelay;
+      const sl=document.getElementById('delaySlider');
+      if(sl && document.activeElement!==sl){
+        sl.value=d.replayDelay;
+        document.getElementById('delayVal').textContent=d.replayDelay+'ms';
+      }
+    }
     d.motors.forEach(m=>{
       if(m.current!==null && m.id<3){
         const a=Math.abs(m.current),pct=Math.min(100,(a/0.72)*100);
         document.getElementById('cc'+m.id).textContent=m.current.toFixed(3)+'A';
         document.getElementById('cb'+m.id).style.width=pct+'%';
         const cu=document.getElementById('curt'+m.id);
-        if(cu) cu.textContent=m.current.toFixed(3)+' A';
+        if(cu)cu.textContent=m.current.toFixed(3)+' A';
       }
     });
   }catch(e){}
@@ -779,7 +950,7 @@ setInterval(async()=>{
     const bP=document.getElementById('btnPlay');
     bR.style.background='transparent';bP.style.background='transparent';
     if(d.recording){
-      dot.className='rec-dot recording';sta.textContent='● RECORDING...';
+      dot.className='rec-dot recording';sta.textContent='● RECORDING... press your buttons now';
       sta.style.color='#ff3355';bR.style.background='#ff335533';
     }else if(d.replaying){
       dot.className='rec-dot replaying';sta.textContent='▶ LOOPING...';
@@ -792,7 +963,11 @@ setInterval(async()=>{
   }catch(e){}
 },600);
 
-lg('OctoGrip v7 ready 🐙','ok');
+window.addEventListener('load',()=>{
+  post('/api/motor','id=5&angle=1000').catch(()=>{});
+  post('/api/updown','angle=1200').catch(()=>{});
+  lg('OctoGrip v12 🐙 — Critical loop & touch bugs patched','ok');
+});
 </script>
 </body>
 </html>)HTML");
@@ -823,7 +998,15 @@ void handleSetMode() {
   }
   server.send(200,"application/json","{\"ok\":1}");
 }
+
+// [FIX v12] Prevent stack overflow by adding autoGrabRunning guard
 void handleAutoGrab() {
+  if (autoGrabRunning) { 
+    server.send(200,"application/json","{\"ok\":1}"); 
+    return; 
+  }
+  isReplaying = false; // [FIX v13] stop replay before grab
+  
   if(server.hasArg("mode")){
     grabMode=server.arg("mode");
     if(grabMode=="soft")        forceLimit=FORCE_SOFT;
@@ -833,20 +1016,32 @@ void handleAutoGrab() {
   server.send(200,"application/json","{\"ok\":1}");
   autoGrab();
 }
-void handleOpen()     { server.send(200,"application/json","{\"ok\":1}"); openGripper(); }
-void handleHome()     { server.send(200,"application/json","{\"ok\":1}"); homeAll(); }
+
+void handleOpen()     { isReplaying=false; autoGrabRunning=false; server.send(200,"application/json","{\"ok\":1}"); openGripper(); } // [FIX v13]
+void handleHome()     { isReplaying=false; autoGrabRunning=false; server.send(200,"application/json","{\"ok\":1}"); homeAll(); } // [FIX v13]
 void handleSetForce() {
   if(server.hasArg("limit")) forceLimit=constrain(server.arg("limit").toFloat(),0.05f,2.0f);
   server.send(200,"application/json","{\"ok\":1}");
 }
 void handleRecStart()    { startRecording(); server.send(200,"application/json","{\"ok\":1}"); }
 void handleRecStop()     { stopRecording();  server.send(200,"application/json","{\"ok\":1}"); }
-void handleRecPlay()     { server.send(200,"application/json","{\"ok\":1}"); replayRecording(); }
+void handleRecPlay()     { 
+  if (isReplaying) { server.send(200,"application/json","{\"ok\":1}"); return; } 
+  server.send(200,"application/json","{\"ok\":1}"); 
+  replayRecording(); 
+}
+
 void handleRecStopPlay() { stopReplay();     server.send(200,"application/json","{\"ok\":1}"); }
+void handleRecDelay() {
+  if(server.hasArg("ms"))
+    replayDelayMs = (uint32_t)constrain(server.arg("ms").toInt(), 10, 200);
+  server.send(200,"application/json","{\"ok\":1}");
+}
 void handleRecStatus() {
   String j="{\"recording\":"+String(isRecording?"true":"false");
   j+=",\"replaying\":"+String(isReplaying?"true":"false");
-  j+=",\"frames\":"+String(recordCount)+"}";
+  j+=",\"frames\":"+String(recordCount);
+  j+=",\"delayMs\":"+String(replayDelayMs)+"}";
   server.send(200,"application/json",j);
 }
 void handleNotFound() { server.send(404,"application/json","{\"error\":\"Not found\"}"); }
@@ -856,7 +1051,7 @@ void setup() {
   unsigned long _t=millis();
   while(!Serial&&millis()-_t<3000);
   delay(200);
-  Serial.println("\n>>> OCTOGRIP v7 <<<");
+  Serial.println("\n>>> OCTOGRIP v12 <<<");
 
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
@@ -878,7 +1073,9 @@ void setup() {
     pca.setPWMFreq(SERVO_FREQ_HZ);
     delay(20);
     disableAll();
-    Serial.println("[MOTORS] All 7 → ZERO POWER at boot");
+    setMotor(M_BEND, 1000);
+    setUpDown(1200);
+    Serial.println("[MOTORS] Boot: CH5=1000µs · CH3+4=63° · CH6=OFF");
   }
 
   WiFi.mode(WIFI_STA);
@@ -901,12 +1098,13 @@ void setup() {
   server.on("/api/grab",        HTTP_POST, handleAutoGrab);
   server.on("/api/open",        HTTP_POST, handleOpen);
   server.on("/api/home",        HTTP_POST, handleHome);
-  server.on("/api/poweroff",    HTTP_POST, [](){ disableAll(); server.send(200,"application/json","{\"ok\":1}"); });
+  server.on("/api/poweroff",    HTTP_POST, [](){ isReplaying=false; autoGrabRunning=false; disableAll(); server.send(200,"application/json","{\"ok\":1}"); }); // [FIX v13]
   server.on("/api/force",       HTTP_POST, handleSetForce);
   server.on("/api/rec/start",   HTTP_POST, handleRecStart);
   server.on("/api/rec/stop",    HTTP_POST, handleRecStop);
   server.on("/api/rec/play",    HTTP_POST, handleRecPlay);
   server.on("/api/rec/stopplay",HTTP_POST, handleRecStopPlay);
+  server.on("/api/rec/delay",   HTTP_POST, handleRecDelay);
   server.onNotFound(handleNotFound);
   server.begin();
   Serial.println("[HTTP] Port 80 ready");
@@ -918,8 +1116,8 @@ void loop() {
   if(millis()-lastLog>=4000){
     lastLog=millis();
     updateCurrents();
-    Serial.printf("[CURR] A=%.3f B=%.3f C=%.3f Limit=%.2f\n",
-      cabCurrent[0],cabCurrent[1],cabCurrent[2],forceLimit);
+    Serial.printf("[CURR] A=%.3f B=%.3f C=%.3f Limit=%.2f Delay=%dms\n",
+      cabCurrent[0],cabCurrent[1],cabCurrent[2],forceLimit,(int)replayDelayMs);
   }
   static unsigned long lastWifi=0;
   if(millis()-lastWifi>=10000){
