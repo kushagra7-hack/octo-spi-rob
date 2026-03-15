@@ -51,9 +51,9 @@ int      recordCount = 0;
 bool     isRecording = false;
 bool     isReplaying = false;
 
-uint32_t replayDelayMs           = 20;   // playback speed, adjustable (20-500ms)
-const uint32_t RECORD_INTERVAL_MS  = 20;   // recording sample rate, always 20ms (~50fps)
+uint32_t replayDelayMs = 50;
 
+void captureFrame();
 void disableMotor(uint8_t id);
 void disableAll();
 String buildJSON();
@@ -74,6 +74,7 @@ void setMotor(uint8_t id, int val) {
   
   if (val < 0) { 
     disableMotor(id); 
+    if (id != M_UPDOWN_2) captureFrame(); 
     return; 
   }
   
@@ -87,6 +88,8 @@ void setMotor(uint8_t id, int val) {
   motorState[id] = (int)us;
   uint16_t tick = (uint16_t)(us * ((uint32_t)SERVO_FREQ_HZ * 4096UL) / 1000000UL);
   pca.setPWM(id, 0, tick);
+  
+  if (id != M_UPDOWN_2) captureFrame();
 }
 
 void setUpDown(int val) {
@@ -96,39 +99,23 @@ void setUpDown(int val) {
 
 void homeAll() { disableAll(); }
 
-// Time-based recording loop: captures full state snapshot every RECORD_INTERVAL_MS (20ms).
-// Recording is always at 20ms (~50fps) regardless of replay speed.
-void recordingLoop() {
-  recordCount = 0;
-  isRecording = true;
-  isReplaying = false;
-  while (isRecording) {
-    if (recordCount >= MAX_FRAMES) { isRecording = false; break; }
-    for (uint8_t i = 0; i < TOTAL_MOTORS; i++)
-      recording[recordCount].val[i] = motorState[i];
-    recordCount++;
-    uint32_t t0 = millis();
-    while (isRecording && (millis() - t0 < RECORD_INTERVAL_MS)) {
-      server.handleClient();
-      yield();
-      delay(5);
-    }
-  }
-  isRecording = false;
-  // Stop all continuous rotation motors when recording ends
-  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
-    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue; // position servos hold OK
-    disableMotor(i);
-  }
+void captureFrame() {
+  if (!isRecording || !recording) return;
+  if (recordCount >= MAX_FRAMES) { isRecording = false; return; }
+  for (uint8_t i = 0; i < TOTAL_MOTORS; i++)
+    recording[recordCount].val[i] = motorState[i];
+  recordCount++;
+}
+
+void startRecording() {
+  recordCount  = 0;
+  isRecording  = true;
+  isReplaying  = false;
 }
 
 void stopRecording() {
   isRecording = false;
-  // Stop all continuous rotation motors on manual stop too
-  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
-    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue;
-    disableMotor(i);
-  }
+  isReplaying = false;
 }
 
 void replayRecording() {
@@ -154,21 +141,9 @@ void replayRecording() {
     }
   }
   isReplaying = false;
-  // Stop all continuous rotation motors when replay ends
-  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
-    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue;
-    disableMotor(i);
-  }
 }
 
-void stopReplay() {
-  isReplaying = false;
-  // Stop all continuous rotation motors on manual stop too
-  for (uint8_t i = 0; i < TOTAL_MOTORS; i++) {
-    if (i == M_UPDOWN_1 || i == M_UPDOWN_2) continue;
-    disableMotor(i);
-  }
-}
+void stopReplay() { isReplaying = false; }
 
 float readCurrent(uint8_t pin) {
   long sum = 0;
@@ -516,7 +491,7 @@ input[type=range]::-webkit-slider-thumb:active{transform:scale(1.25)}
 
   <div class="delay-row">
     <span class="delay-label">⏱ REPLAY SPEED</span>
-    <input type="range" id="delaySlider" min="20" max="500" value="20"
+    <input type="range" id="delaySlider" min="10" max="200" value="50"
            oninput="updateDelaySlider(this.value)"
            style="flex:1;min-width:120px;--mc:var(--ca);accent-color:var(--ca)">
     <span class="delay-val" id="delayVal">50ms</span>
@@ -638,11 +613,25 @@ function buildBaseCard(cid) {
         <span style="color:${color}">2000µs</span>
       </div>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:8px 0 4px;
+      background:#0a1020;border:1px solid var(--border);border-radius:8px;padding:8px 12px">
+      <span style="font-family:'Share Tech Mono',monospace;font-size:.65rem;
+        color:var(--dim);min-width:52px">⚡ SPEED</span>
+      <input type="range" id="ch6speed" min="1" max="100" value="50"
+        oninput="updateCh6Speed(this.value)"
+        style="flex:1;accent-color:#60a5fa">
+      <span id="ch6speedval" style="font-family:'Share Tech Mono',monospace;
+        font-size:.9rem;font-weight:700;color:#60a5fa;min-width:38px;text-align:right">50%</span>
+      <button id="ch6inv" onclick="toggleCh6Invert()" style="padding:4px 10px;
+        border-radius:6px;border:1px solid var(--dim);background:transparent;
+        color:var(--dim);font-family:'Rajdhani',sans-serif;font-weight:700;
+        font-size:.75rem;cursor:pointer;white-space:nowrap">🔄 INVERT: OFF</button>
+    </div>
     <div class="kill-row">
       <button class="kill-btn" onclick="killBase()">🛑 KILL CH6</button>
-      <button onmousedown="if(!window._touch)baseHold(2000,'bfwd')" 
-        ontouchstart="window._touch=true; baseHold(2000,'bfwd'); event.preventDefault()"
-        onmouseup="baseRelease('bfwd')" 
+      <button onmousedown="if(!window._touch)baseHold('fwd','bfwd')"
+        ontouchstart="window._touch=true; baseHold('fwd','bfwd'); event.preventDefault()"
+        onmouseup="baseRelease('bfwd')"
         ontouchend="window._touch=false; baseRelease('bfwd'); event.preventDefault()"
         onmouseleave="if(!window._touch)baseRelease('bfwd')" id="bfwd"
         style="flex:1;padding:9px;border-radius:8px;border:1px solid ${color};
@@ -650,9 +639,9 @@ function buildBaseCard(cid) {
           font-weight:700;font-size:.82rem;cursor:pointer;-webkit-tap-highlight-color:transparent">
         ▶ HOLD FWD
       </button>
-      <button onmousedown="if(!window._touch)baseHold(1000,'brev')" 
-        ontouchstart="window._touch=true; baseHold(1000,'brev'); event.preventDefault()"
-        onmouseup="baseRelease('brev')" 
+      <button onmousedown="if(!window._touch)baseHold('rev','brev')"
+        ontouchstart="window._touch=true; baseHold('rev','brev'); event.preventDefault()"
+        onmouseup="baseRelease('brev')"
         ontouchend="window._touch=false; baseRelease('brev'); event.preventDefault()"
         onmouseleave="if(!window._touch)baseRelease('brev')" id="brev"
         style="flex:1;padding:9px;border-radius:8px;border:1px solid #ff3355;
@@ -762,16 +751,40 @@ function liveBase(val) {
     },25);
   }
 }
-function baseHold(speed,btnId){
+// CH6 speed & invert
+let ch6SpeedPct = 50;
+let ch6Invert   = false;
+
+function ch6SpeedUs(dir) {
+  const offset = Math.round(ch6SpeedPct / 100 * 500);
+  let fwd = 1500 + offset;
+  let rev = 1500 - offset;
+  if (ch6Invert) { let t=fwd; fwd=rev; rev=t; }
+  return dir==='fwd' ? fwd : rev;
+}
+function updateCh6Speed(v) {
+  ch6SpeedPct = parseInt(v);
+  document.getElementById('ch6speedval').textContent = v + '%';
+}
+function toggleCh6Invert() {
+  ch6Invert = !ch6Invert;
+  const btn = document.getElementById('ch6inv');
+  if(btn){btn.textContent='🔄 INVERT: '+(ch6Invert?'ON':'OFF');
+    btn.style.color=ch6Invert?'var(--ca)':'var(--dim)';
+    btn.style.borderColor=ch6Invert?'var(--ca)':'var(--dim)';}
+  lg('CH6 invert: '+(ch6Invert?'ON':'OFF'),'warn');
+}
+function baseHold(dir, btnId) {
+  const speed = ch6SpeedUs(dir);
   const sl=document.getElementById('sl6');if(sl)sl.value=speed;
   const notice=document.getElementById('ch6notice');
   document.getElementById('av6').textContent=usToLabel(speed);
   if(notice){notice.textContent='✅ POWERED — '+usToLabel(speed);notice.style.color='#3dffa0';}
   const btn=document.getElementById(btnId);if(btn)btn.style.opacity='0.6';
   post('/api/motor',`id=6&angle=${speed}`);
-  lg('Base CH6 → '+(speed===2000?'FWD':'REV'),'warn');
+  lg('Base CH6 '+(dir==='fwd'?'FWD':'REV')+' '+ch6SpeedPct+'%','warn');
 }
-function baseRelease(btnId){
+function baseRelease(btnId) {
   const sl=document.getElementById('sl6');if(sl)sl.value=1500;
   const notice=document.getElementById('ch6notice');
   document.getElementById('av6').textContent='IDLE';
@@ -1048,13 +1061,8 @@ void handleSetForce() {
   if(server.hasArg("limit")) forceLimit=constrain(server.arg("limit").toFloat(),0.05f,2.0f);
   server.send(200,"application/json","{\"ok\":1}");
 }
-void handleRecStart() {
-  if (isRecording) { server.send(200,"application/json","{\"ok\":1}"); return; }
-  isReplaying = false; autoGrabRunning = false;
-  server.send(200,"application/json","{\"ok\":1}");
-  recordingLoop();
-}
-void handleRecStop()  { stopRecording(); server.send(200,"application/json","{\"ok\":1}"); }
+void handleRecStart()    { startRecording(); server.send(200,"application/json","{\"ok\":1}"); }
+void handleRecStop()     { stopRecording();  server.send(200,"application/json","{\"ok\":1}"); }
 void handleRecPlay()     { 
   if (isReplaying) { server.send(200,"application/json","{\"ok\":1}"); return; } 
   autoGrabRunning = false; // [FIX v14] stop autograb before replay to prevent nested loop crash
@@ -1066,7 +1074,7 @@ void handleRecStopPlay() { stopReplay();     server.send(200,"application/json",
 void handleRecDelay() {
   if(!server.hasArg("ms")){ server.send(400,"application/json","{\"error\":\"Missing ms\"}"); return; } // [FIX v14]
   int ms = server.arg("ms").toInt();
-  if(ms < 20 || ms > 500){ server.send(400,"application/json","{\"error\":\"ms out of range (20-500)\"}"); return; } // [FIX v16]
+  if(ms < 10 || ms > 200){ server.send(400,"application/json","{\"error\":\"ms out of range\"}"); return; } // [FIX v14]
   replayDelayMs = (uint32_t)ms;
   server.send(200,"application/json","{\"ok\":1}");
 }
